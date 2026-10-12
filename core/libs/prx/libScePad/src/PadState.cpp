@@ -229,7 +229,7 @@ PadData Pad::ReadState() {
     if (!initialized) throw std::runtime_error("Pad: read before initialization");
     const std::uint64_t now = sceKernelGetProcessTime();
     const auto injected = InjectedInput(now);
-    return BuildData(state, timestamp, now, injected);
+    return BuildData(state, now, now, injected);
 }
 
 int Pad::Read(PadData* data, int num) {
@@ -240,7 +240,7 @@ int Pad::Read(PadData* data, int num) {
     const std::uint64_t now = sceKernelGetProcessTime();
     const auto injected = InjectedInput(now);
     if (queue.empty()) {
-        data[0] = BuildData(state, timestamp, now, injected);
+        data[0] = BuildData(state, now, now, injected);
         return 1;
     }
     int count = 0;
