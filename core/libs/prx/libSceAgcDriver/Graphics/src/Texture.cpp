@@ -4662,6 +4662,11 @@ bool StorageTexture::SameSurfaceShape(const StorageTexture& other) const {
     return guestBytes == other.guestBytes && mine.width == theirs.width && mine.height == theirs.height && mine.depthOrLastArray == theirs.depthOrLastArray && mine.baseArray == theirs.baseArray && mine.mipCount == theirs.mipCount && mine.tileMode == theirs.tileMode && mine.dimension == theirs.dimension && mine.format == theirs.format && storageFormat == other.storageFormat && geometry.imageLayers == other.geometry.imageLayers && geometry.imageDepth == other.geometry.imageDepth;
 }
 
+bool StorageTexture::ImageCoversGuestBytes() const {
+    const std::array<std::pair<std::uint64_t, std::uint64_t>, 1> whole{{{0, guestBytes}}};
+    return uncoveredBytes(whole).empty();
+}
+
 bool StorageTexture::CopyFrom(StorageTexture& source, const char*& refusal) {
     if (&source == this || !SameSurfaceShape(source)) {
         refusal = "shape";
