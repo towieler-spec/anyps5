@@ -123,8 +123,10 @@ static void InitializeLinuxGuestModule(void* native) {
     link_map* requested = nullptr;
     link_map* owner = nullptr;
     Dl_info info{};
-    if (::dlinfo(native, RTLD_DI_LINKMAP, &requested) != 0 ||
-        !::dladdr1(table, &info, reinterpret_cast<void**>(&owner), RTLD_DL_LINKMAP) || owner != requested) return;
+    if (::dlinfo(native, RTLD_DI_LINKMAP, &requested) != 0 || requested == nullptr ||
+        !::dladdr1(table, &info, reinterpret_cast<void**>(&owner), RTLD_DL_LINKMAP) || owner == nullptr)
+        throw std::runtime_error("dlopen: cannot identify guest lifecycle metadata owner");
+    if (owner != requested) return;
     if (table[0] != 0x415053354c494658ull) throw std::runtime_error("dlopen: unsupported guest lifecycle metadata");
     using Entry = int (APS5_VABI *)(std::size_t, const void*, void*);
     using Initializer = void (APS5_VABI *)(int, char**, char**);

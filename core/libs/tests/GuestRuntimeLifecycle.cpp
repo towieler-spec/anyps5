@@ -55,10 +55,13 @@ int main(int argc, char** argv) {
         return 0;
     }
     const std::uint64_t payload = 0xfeed0123;
+    const bool zeroStart = std::strcmp(argv[2], "zero-start") == 0;
+    const std::size_t requestedSize = zeroStart ? 0 : sizeof(payload);
+    const void* requestedPointer = zeroStart ? nullptr : &payload;
     int result = -1;
     std::int32_t first = -1, second = -1;
     if (concurrent) {
-        std::thread one([&] { first = sceKernelLoadStartModule(argv[1], sizeof(payload), &payload, 0, nullptr, &result); });
+        std::thread one([&] { first = sceKernelLoadStartModule(argv[1], requestedSize, requestedPointer, 0, nullptr, &result); });
         const auto limit = std::chrono::steady_clock::now() + std::chrono::seconds(5);
         while (!entered.load(std::memory_order_acquire)) {
             Require(std::chrono::steady_clock::now() < limit);
@@ -69,13 +72,13 @@ int main(int argc, char** argv) {
         one.join();
         two.join();
     } else {
-        first = sceKernelLoadStartModule(argv[1], sizeof(payload), &payload, 0, nullptr, &result);
+        first = sceKernelLoadStartModule(argv[1], requestedSize, requestedPointer, 0, nullptr, &result);
         second = sceKernelLoadStartModule(argv[1], 0, nullptr, 0, nullptr, nullptr);
     }
     std::fprintf(stderr, "first=%d second=%d result=%x count=%u\n", first, second, result, count.load());
     if (first < 0) std::fprintf(stderr, "loader error: %s\n", dlerror_nid_postfix());
     Require(first > 0 && second > 0 && first != second && result == 0x5a17);
-    Require(count.load() == 2 && events[0].args == sizeof(payload) && events[0].argp == &payload);
+    Require(count.load() == 2 && events[0].args == requestedSize && events[0].argp == requestedPointer);
     Require(events[1].args == 0xa1 && events[1].argp == nullptr);
     Require(sceKernelStopUnloadModule(first, 0, nullptr, 0, nullptr, nullptr) == 0 && count.load() == 2);
     Require(sceKernelStopUnloadModule(second, 0, nullptr, 0, nullptr, nullptr) == 0 && count.load() == 2);

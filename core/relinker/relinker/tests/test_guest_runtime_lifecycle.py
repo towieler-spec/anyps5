@@ -47,7 +47,7 @@ def main():
         run = subprocess.run([str(relinker), "--skip-syscall-check", "--module-dir", "Media/Plugins", "--rpath", str(libraries), str(source), str(root / "app.elf")], capture_output=True, text=True, timeout=30)
         assert run.returncode == 0, (run.stdout, run.stderr)
         module = root / "app0/Media/Plugins/args.prx.guest.prx"
-        for mode in ("never-start", "start", "concurrent"):
+        for mode in ("never-start", "start", "zero-start", "concurrent"):
             run = subprocess.run([str(executable), "./" + module.name, mode], cwd=module.parent, env=os.environ, capture_output=True, text=True, timeout=10)
             assert run.returncode == 0, (mode, run.returncode, run.stdout, run.stderr)
     print("Runtime module initialization and finalization passed")
