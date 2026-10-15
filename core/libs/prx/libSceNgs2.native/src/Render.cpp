@@ -13,13 +13,16 @@
 
 static constexpr double PHASE_ONE = 4294967296.0;
 static constexpr std::uint64_t PHASE_FRACTION = 0xffffffff;
+static constexpr std::size_t MAX_POOLED_PCM_BYTES = 64 * 1024;
 
 static void RecyclePcm(Ngs2Voice& voice, std::vector<std::uint8_t>& pcm) {
     if (pcm.capacity() == 0) return;
-    auto* smallest = &voice.pcmPool[0];
-    for (auto& buffer : voice.pcmPool) if (buffer.capacity() < smallest->capacity()) smallest = &buffer;
-    if (pcm.capacity() >= smallest->capacity()) pcm.swap(*smallest);
-    pcm = {};
+    if (pcm.capacity() <= MAX_POOLED_PCM_BYTES) {
+        auto* smallest = &voice.pcmPool[0];
+        for (auto& buffer : voice.pcmPool) if (buffer.capacity() < smallest->capacity()) smallest = &buffer;
+        if (pcm.capacity() >= smallest->capacity()) pcm.swap(*smallest);
+    }
+    std::vector<std::uint8_t>{}.swap(pcm);
 }
 
 void Ngs2RecyclePcm(Ngs2Voice& voice, Ngs2Block& block) {
@@ -29,9 +32,11 @@ void Ngs2RecyclePcm(Ngs2Voice& voice, Ngs2Block& block) {
 
 static const std::uint8_t* DecodePcm(Ngs2Voice& voice, std::vector<std::uint8_t>& pcm, const std::uint8_t* data, std::size_t bytes) {
     if (pcm.empty()) {
-        auto* largest = &voice.pcmPool[0];
-        for (auto& buffer : voice.pcmPool) if (buffer.capacity() > largest->capacity()) largest = &buffer;
-        pcm.swap(*largest);
+        if (bytes <= MAX_POOLED_PCM_BYTES) {
+            auto* largest = &voice.pcmPool[0];
+            for (auto& buffer : voice.pcmPool) if (buffer.capacity() > largest->capacity()) largest = &buffer;
+            pcm.swap(*largest);
+        }
         pcm.resize(bytes);
         std::memcpy(pcm.data(), data, bytes);
         voice.decodedBytes += bytes;
@@ -149,6 +154,9 @@ static void Advance(Ngs2Voice& voice, std::uint64_t frames) {
             while (block.pieces.size() > 1 && block.cursor >= block.pieces.front().firstFrame + block.pieces.front().frames) {
                 RecyclePcm(voice, block.pieces.front().pcm);
                 block.pieces.erase(block.pieces.begin());
+            }
+            if (!block.pieces.empty() && block.cursor >= block.pieces.front().firstFrame + block.pieces.front().frames) {
+                RecyclePcm(voice, block.pieces.front().pcm);
             }
         }
         if (block.cursor == block.info.num_samples || (block.streaming && !voice.acceptsBlocks && block.cursor == block.availableFrames)) {
