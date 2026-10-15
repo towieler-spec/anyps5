@@ -5,6 +5,7 @@
 #include "prx/libc/include/general/VabiMacros.hpp"
 #include <chrono>
 #include <cstdlib>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -211,7 +212,10 @@ static void CheckHeldSampleTimes(int handle) {
     Require(scePadReadState(handle, &second) == PAD_OK);
     Require(first.buttons == held.buttons && second.buttons == held.buttons);
     Require(first.left_stick_x == 200 && second.left_stick_x == 200);
-    Require(second.timestamp > first.timestamp);
+    if (second.timestamp <= first.timestamp) {
+        std::fputs("scePadReadState returned a stale timestamp for held input\n", stderr);
+        std::abort();
+    }
     Require(scePadRead_nid_postfix(handle, samples, 64) == 1);
     Require(samples[0].buttons == held.buttons && samples[0].timestamp <= first.timestamp);
     Require(scePadRead_nid_postfix(handle, &first, 1) == 1);
@@ -219,7 +223,10 @@ static void CheckHeldSampleTimes(int handle) {
     Require(scePadRead_nid_postfix(handle, &second, 1) == 1);
     Require(first.buttons == held.buttons && second.buttons == held.buttons);
     Require(first.left_stick_x == 200 && second.left_stick_x == 200);
-    Require(second.timestamp > first.timestamp);
+    if (second.timestamp <= first.timestamp) {
+        std::fputs("scePadRead returned a stale timestamp for held input\n", stderr);
+        std::abort();
+    }
     PadPublishInput_nid_postfix(PadInputState{});
 }
 
