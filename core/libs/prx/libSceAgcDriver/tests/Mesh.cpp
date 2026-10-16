@@ -395,6 +395,21 @@ int main() {
         }
 
         ClearPixels();
+        auto pointSubgroup = SmallSubgroup;
+        pointSubgroup.outputPrimitiveSize = 1u;
+        for (const auto pointWave : {32u, 64u}) {
+            ClearPixels();
+            DrawMesh(device, {pointSubgroup, {0, static_cast<std::uint32_t>(Ordered.size()), 0, 1, 0, false}, VertexBufferDescriptor(Ordered.data(), static_cast<std::uint32_t>(Ordered.size())), ShaderRecompiler::MeshDrawPushOffsetBytes, false, pointWave});
+            for (std::uint32_t triangle = 0; triangle < Triangles; ++triangle) {
+                const auto& position = Ordered[3u * triangle].position;
+                const auto x = static_cast<std::uint32_t>((position[0] + 1.0f) * 0.5f * Width);
+                const auto y = static_cast<std::uint32_t>((1.0f - position[1]) * 0.5f * Height);
+                const auto offset = (static_cast<std::size_t>(y) * Width + x) * 4u;
+                Require(PixelIs(offset, TriangleColor(triangle)), "mesh point missing at first exported index for primitive " + std::to_string(triangle));
+                Require(PixelIs(CellPixel(triangle), Background), "mesh point output filled the interior of its packed triangle");
+            }
+        }
+
         auto lineSubgroup = FastLaunchSubgroup;
         lineSubgroup.maxPrimitives = 2u;
         lineSubgroup.outputPrimitiveSize = 2u;
