@@ -94,7 +94,7 @@ std::vector<std::uint8_t> GuestModuleWriter::WriteLinux(const Relinker::GuestIma
         };
         Io::AppendU64(bytes, 0x415053354c494658ull);
         pointer(0);
-        pointer(image.Init, image.Init != 0);
+        pointer(image.Init, image.HasInit);
         pointer(image.Fini, image.Fini != 0);
         Io::AppendU64(bytes, image.InitArray.size());
         Io::AppendU64(bytes, image.FiniArray.size());
