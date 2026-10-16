@@ -6,6 +6,8 @@
 #include "prx/libSceAgcDriver/Graphics/shaders/CmaskClear_spv.h"
 #include "prx/libSceAgcDriver/Graphics/shaders/TextureDetileImage_spv.h"
 #include "prx/libSceAgcDriver/Graphics/shaders/TextureRepack_spv.h"
+#include "prx/libSceAgcDriver/Graphics/shaders/TextureDetileImageWords_spv.h"
+#include "prx/libSceAgcDriver/Graphics/shaders/TextureDetileWords_spv.h"
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -118,6 +120,8 @@ void TextureDetiler::release() noexcept {
     if (imageModule) context.Function<PFN_vkDestroyShaderModule>("vkDestroyShaderModule")(context.device, imageModule, nullptr);
     if (repackPipeline) context.Function<PFN_vkDestroyPipeline>("vkDestroyPipeline")(context.device, repackPipeline, nullptr);
     if (repackModule) context.Function<PFN_vkDestroyShaderModule>("vkDestroyShaderModule")(context.device, repackModule, nullptr);
+    if (imageWordModule) context.Function<PFN_vkDestroyShaderModule>("vkDestroyShaderModule")(context.device, imageWordModule, nullptr);
+    if (wordModule) context.Function<PFN_vkDestroyShaderModule>("vkDestroyShaderModule")(context.device, wordModule, nullptr);
     if (imagePipelineLayout) context.Function<PFN_vkDestroyPipelineLayout>("vkDestroyPipelineLayout")(context.device, imagePipelineLayout, nullptr);
     if (imageDescriptorLayout) context.Function<PFN_vkDestroyDescriptorSetLayout>("vkDestroyDescriptorSetLayout")(context.device, imageDescriptorLayout, nullptr);
     for (const auto& entry : pipelines) context.Function<PFN_vkDestroyPipeline>("vkDestroyPipeline")(context.device, entry.second, nullptr);
@@ -162,11 +166,13 @@ VkPipeline TextureDetiler::pipeline(TextureTileMode tileMode, std::uint32_t elem
         values[2] = 2u;
         std::copy(equation->bits.begin(), equation->bits.end(), values.begin() + 4);
     }
-    if (image && imageModule == VK_NULL_HANDLE) {
+    const bool words = elementBytes < 4u && (image ? retile && values[2] != 2u : !retile || values[2] != 2u);
+    auto& shader = image ? (words ? imageWordModule : imageModule) : (words ? wordModule : module);
+    if (shader == VK_NULL_HANDLE) {
         VkShaderModuleCreateInfo moduleInfo{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
-        moduleInfo.codeSize = sizeof(TEXTURE_DETILE_IMAGE_SPV);
-        moduleInfo.pCode = TEXTURE_DETILE_IMAGE_SPV;
-        Check(context.Function<PFN_vkCreateShaderModule>("vkCreateShaderModule")(context.device, &moduleInfo, nullptr, &imageModule), "vkCreateShaderModule");
+        moduleInfo.codeSize = image ? (words ? sizeof(TEXTURE_DETILE_IMAGE_WORDS_SPV) : sizeof(TEXTURE_DETILE_IMAGE_SPV)) : sizeof(TEXTURE_DETILE_WORDS_SPV);
+        moduleInfo.pCode = image ? (words ? TEXTURE_DETILE_IMAGE_WORDS_SPV : TEXTURE_DETILE_IMAGE_SPV) : TEXTURE_DETILE_WORDS_SPV;
+        Check(context.Function<PFN_vkCreateShaderModule>("vkCreateShaderModule")(context.device, &moduleInfo, nullptr, &shader), "vkCreateShaderModule");
     }
     std::array<VkSpecializationMapEntry, 22> entries{};
     for (std::uint32_t index = 0; index < entries.size(); ++index) entries[index] = {index, index * 4u, 4};
@@ -177,7 +183,7 @@ VkPipeline TextureDetiler::pipeline(TextureTileMode tileMode, std::uint32_t elem
     specialization.pData = values.data();
     VkPipelineShaderStageCreateInfo stage{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
     stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-    stage.module = image ? imageModule : module;
+    stage.module = shader;
     stage.pName = "main";
     stage.pSpecializationInfo = &specialization;
     VkComputePipelineCreateInfo createInfo{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
