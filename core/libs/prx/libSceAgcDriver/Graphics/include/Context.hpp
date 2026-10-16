@@ -195,6 +195,9 @@ struct Context {
     bool samplerFilterMinmax = false;
     bool nonSeamlessCubeMap = false;
     VkSampleCountFlags mergedCoverageSampleCounts = 0;
+    bool customBorderColor = false;
+    std::uint32_t maxCustomBorderColorSamplers = 0;
+    std::atomic<std::uint32_t>* customBorderColorSamplers = nullptr;
     bool conservativeRasterization = false;
     bool meshWave32 = false;
     VkBuffer emptyBuffer = VK_NULL_HANDLE;
