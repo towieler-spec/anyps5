@@ -1029,7 +1029,13 @@ Pthread APS5_VABI scePthreadSelf() {
 }
 
 void APS5_VABI scePthreadYield() {
+#ifdef _WIN32
+    if (!SwitchToThread()) {
+        Sleep(1);
+    }
+#else
     std::this_thread::yield();
+#endif
 }
 
 int APS5_VABI scePthreadCancel(Pthread thread) {
@@ -1041,7 +1047,7 @@ int APS5_VABI scePthreadCancel(Pthread thread) {
             if (!thread->cancelWait) return SCE_OK;
             thread->cancelWait->NotifyAll();
         }
-        std::this_thread::yield();
+        scePthreadYield();
     }
 }
 
