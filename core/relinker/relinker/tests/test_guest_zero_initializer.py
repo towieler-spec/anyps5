@@ -105,7 +105,7 @@ def check_deferred_linux(relinker, work, host, preinit, has_init, native):
     provider = libraries / 'libc.prx'
     shutil.copyfile(host, provider)
     result = subprocess.run([str(relinker), '--skip-syscall-check', '--module-dir', 'plugins',
-                             '--rpath', str(libraries), str(source), str(work / 'output.elf')],
+                             '--rpath', '$ORIGIN/libs', str(source), str(work / 'output.elf')],
                             capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, (preinit, has_init, result.stdout, result.stderr)
     converted = work / 'app0/plugins/zero.prx.guest.prx'
