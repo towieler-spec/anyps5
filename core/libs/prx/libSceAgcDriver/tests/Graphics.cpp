@@ -1142,8 +1142,13 @@ void ShaderStageTests() {
         points.context[0x1ff] = 0x8a;
         points.context[0x2ce] = 3;
         points.context[0x29b] = 0;
+        points.context[0x280] = 0x00180018u;
+        points.context[0x281] = 0x00400008u;
         const auto pointState = AgcDriver::Graphics::DecodeState(points);
         const auto& pointMesh = *pointState.stages.mesh;
+        ShaderRecompiler::ShaderVertexStageInfo pointInfo{};
+        AgcDriver::Graphics::ApplyPointSize(pointState, pointInfo);
+        Require(pointInfo.pointList && pointInfo.pointSize == 3.0f && pointInfo.pointSizeMin == 1.0f && pointInfo.pointSizeMax == 8.0f, "geometry points lost their register sizes");
         Require(pointMesh.outputPrimitiveSize == 1u && pointMesh.primitivesPerGroup == 44u && pointMesh.verticesPerGroup == 46u && pointMesh.maxVertices == 138u && pointMesh.maxPrimitives == 138u && pointMesh.threadsPerGroup == 192u && AgcDriver::Graphics::RasterPrimitiveOf(pointState) == ShaderRecompiler::RasterPrimitive::Point, "triangle-strip input with point output did not decode the reported subgroup");
         lines.context[0x29b] = 1;
         lines.context[0x2ce] = 1;
@@ -9503,6 +9508,14 @@ void pipelineJournalTests() {
         GraphicsPipelineRecipe pointDecoded;
         Require(DecodeGraphicsPipelineRecipe(EncodeGraphicsPipelineRecipe(MakeGraphicsPipelineRecipe(pointState, input, layouts.View(), shaders, VK_IMAGE_LAYOUT_GENERAL)), pointDecoded), "the point list recipe does not decode");
         Require(pointDecoded.state.vertexPoints && pointDecoded.state.pointSize == 4.0f && pointDecoded.state.pointSizeMin == 0.5f && pointDecoded.state.pointSizeMax == 8.0f, "the recipe dropped the vertex point list or its point sizes");
+        auto meshPointState = pointState;
+        meshPointState.vertexPoints = false;
+        meshPointState.stages.mesh = *lineState.stages.mesh;
+        meshPointState.stages.mesh->outputPrimitiveSize = 1u;
+        meshPointState.stages.mesh->provokingVertex = 0u;
+        GraphicsPipelineRecipe meshPointDecoded;
+        Require(DecodeGraphicsPipelineRecipe(EncodeGraphicsPipelineRecipe(MakeGraphicsPipelineRecipe(meshPointState, input, layouts.View(), shaders, VK_IMAGE_LAYOUT_GENERAL)), meshPointDecoded), "the mesh point recipe does not decode");
+        Require(!meshPointDecoded.state.vertexPoints && meshPointDecoded.state.stages.mesh && meshPointDecoded.state.stages.mesh->outputPrimitiveSize == 1u && meshPointDecoded.state.pointSize == 4.0f && meshPointDecoded.state.pointSizeMin == 0.5f && meshPointDecoded.state.pointSizeMax == 8.0f, "the recipe dropped mesh points or their sizes without the vertex point flag");
         auto fourSampleState = state;
         fourSampleState.samples = 4;
         auto maskState = fourSampleState;

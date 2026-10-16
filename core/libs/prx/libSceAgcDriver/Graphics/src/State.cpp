@@ -146,10 +146,13 @@ std::uint32_t inactiveVertexPointSize(const QueueState& queue) {
     }
 }
 
-bool vertexPointList(const QueueState& queue) {
+bool pointOutput(const QueueState& queue) {
     const auto stages = find(queue.context, 0x2d5);
     const auto primitive = find(queue.userConfig, 0x242, RegisterBank::UserConfig);
-    return stages != queue.context.end() && primitive != queue.userConfig.end() && (stages->second & 0x24u) == 0 && primitive->second == 1u;
+    if (stages == queue.context.end()) return false;
+    if ((stages->second & 0x24u) == 0) return primitive != queue.userConfig.end() && primitive->second == 1u;
+    const auto output = find(queue.context, 0x29b);
+    return (stages->second & 0x24u) == 0x20u && output != queue.context.end() && output->second == 0u;
 }
 
 void decodePointSize(const QueueState& queue, State& result) {
@@ -969,7 +972,7 @@ std::array<std::uint8_t, 32> PixelSampleLocations(const State& state, const Shad
 }
 
 void ApplyPointSize(const State& state, ShaderRecompiler::ShaderVertexStageInfo& vertex) {
-    if (!state.vertexPoints) return;
+    if (!state.vertexPoints && !(state.stages.mesh.has_value() && state.stages.mesh->outputPrimitiveSize == 1u)) return;
     vertex.paClVsOutCntl |= state.paClVsOutCntl & (1u << 16u);
     vertex.pointList = true;
     vertex.pointSize = state.pointSize;
@@ -1180,10 +1183,10 @@ State DecodeState(const QueueState& queue, bool vertexWorkgroup) {
     }
     APS5_LOG_OUT_DEBUG("Topology=%u", static_cast<unsigned>(result.topology));
     result.primitiveRestart = read(queue.userConfig, 0x24b, RegisterBank::UserConfig) != 0 && !result.rectList && !result.quadList && result.topology != VK_PRIMITIVE_TOPOLOGY_PATCH_LIST;
-    zero(cx, 0x207, ~(LayerExports | ClipCullExports | (result.vertexPoints ? 1u << 16u : inactiveVertexPointSize(queue))), "layer, viewport or auxiliary vertex exports");
+    zero(cx, 0x207, ~(LayerExports | ClipCullExports | ((result.vertexPoints || (result.stages.mesh.has_value() && result.stages.mesh->outputPrimitiveSize == 1u)) ? 1u << 16u : inactiveVertexPointSize(queue))), "layer, viewport or auxiliary vertex exports");
     Require(std::popcount(read(cx, 0x207) & 0xffffu) <= 8, "more than eight clip and cull distances are unsupported");
     result.paClVsOutCntl = read(cx, 0x207);
-    if (result.vertexPoints) decodePointSize(queue, result);
+    if (result.vertexPoints || (result.stages.mesh.has_value() && result.stages.mesh->outputPrimitiveSize == 1u)) decodePointSize(queue, result);
     result.samples = decodeSamples(cx);
     Require(coveredCentroidSupported(queue), "COVERED_CENTROID_IS_CENTER with active or unspecified centroid inputs is not implemented");
     decodeSampleLocations(cx, result);
@@ -1898,7 +1901,7 @@ std::string DrawRejection(const QueueState& queue, bool indexed) {
         if (value(queue.userConfig, 0x242, primitive) && (primitive & 0x3fu) != 1 && (primitive & 0x3fu) != 2 && (primitive & 0x3fu) != 3 && (primitive & 0x3fu) != 4 && (primitive & 0x3fu) != 5 && (primitive & 0x3fu) != 6 && (primitive & 0x3fu) != 21) return "AGC graphics: primitive restart is only supported for point, line and triangle topologies";
         if (value(cx, 0x103, resetIndex) && (resetIndex & 0xffffu) != 0xffffu) return "AGC graphics: primitive restart index other than all ones is unsupported";
     }
-    if (auto reason = nonzero(cx, 0x207, ~(LayerExports | ClipCullExports | (vertexPointList(queue) ? 1u << 16u : inactiveVertexPointSize(queue))), "layer, viewport or auxiliary vertex exports"); !reason.empty()) return reason;
+    if (auto reason = nonzero(cx, 0x207, ~(LayerExports | ClipCullExports | (pointOutput(queue) ? 1u << 16u : inactiveVertexPointSize(queue))), "layer, viewport or auxiliary vertex exports"); !reason.empty()) return reason;
     if (value(cx, 0x207, word) && std::popcount(word & 0xffffu) > 8) return require(false, "more than eight clip and cull distances are unsupported");
     if (value(cx, 0x200, word)) {
         const auto renderControl = find(cx, 0x000);

@@ -227,6 +227,7 @@ ShaderStageInputInfo BuildShaderStageInputInfo(ShaderStageKind stage, const Gues
             target.provokingVertex = mesh->provokingVertex;
             target.esgsItemSize = mesh->esgsItemSize;
             target.outputPrimitiveSize = mesh->outputPrimitiveSize;
+            if (target.outputPrimitiveSize == 1u) vertexStorage.pointList = true;
             if (target.threadsNum[0] == 0u || target.maxVertices == 0u || target.maxPrimitives == 0u || (target.outputPrimitiveSize < 1u || target.outputPrimitiveSize > 3u) || target.provokingVertex >= target.outputPrimitiveSize) throw std::runtime_error("ShaderInputInfoBuilder: invalid mesh configuration");
         }
         ShaderStageInputInfo result;

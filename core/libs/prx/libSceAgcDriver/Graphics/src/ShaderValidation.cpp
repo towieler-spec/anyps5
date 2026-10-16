@@ -138,6 +138,10 @@ struct Module {
                 Require(input && (clipInput || (value == spv::BuiltInPosition && signature == "f32x4") || (value == spv::BuiltInTessCoord && stage == Stage::TessellationEvaluation && signature == "f32x3") || ((value == spv::BuiltInInvocationId || value == spv::BuiltInPrimitiveId || value == spv::BuiltInPatchVertices) && (signature == "i32" || signature == "u32"))), "unsupported tessellation built-in");
                 return;
             }
+            if (!input && value == spv::BuiltInPointSize && pointSizeOutput && signature == "f32" && !pointSize) {
+                pointSize = true;
+                return;
+            }
             if (!input && value == spv::BuiltInPrimitivePointIndicesEXT) primitiveIndices = 1u;
             if (!input && value == spv::BuiltInPrimitiveLineIndicesEXT) primitiveIndices = 2u;
             if (!input && value == spv::BuiltInPrimitiveTriangleIndicesEXT) primitiveIndices = 3u;
@@ -190,7 +194,7 @@ Module Inspect(const CompiledShader& compiled, const State& state, const VkPhysi
     Require(words[4] == 0, "unsupported SPIR-V schema: " + std::to_string(words[4]));
 
     Module module;
-    module.pointSizeOutput = state.vertexPoints && stage == Stage::Vertex;
+    module.pointSizeOutput = (state.vertexPoints && stage == Stage::Vertex) || (mesh && state.stages.mesh.has_value() && state.stages.mesh->outputPrimitiveSize == 1u);
     std::uint32_t entries = 0;
     std::uint32_t memoryModels = 0;
     std::uint32_t entryPoint = 0;

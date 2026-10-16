@@ -541,7 +541,8 @@ void EmitAuxPositionExport(SpirvValueEmitContext& ctx, std::uint32_t data, const
                 size = state.module.AllocateId();
                 state.module.AddFunction(spv::OpExtInst, TypeF32(state), size, GlslStd450(state), GLSLstd450FClamp, f32, ConstantF32(state, std::bit_cast<std::uint32_t>(PointSizeFloor(*state.inputInfo.vertex))), ConstantF32(state, std::bit_cast<std::uint32_t>(state.inputInfo.vertex->pointSizeMax)));
             }
-            state.module.AddFunction(spv::OpStore, state.pointSizeVariable, size);
+            const auto pointer = state.program.Resources().stage == IrShaderStage::Mesh ? MeshOutputPointer(state, StageOutputKind::PointSize) : state.pointSizeVariable;
+            state.module.AddFunction(spv::OpStore, pointer, size);
             continue;
         }
         const auto storeDistance = [&](StageOutputKind kind, std::uint32_t variable, std::uint32_t index) {
@@ -699,7 +700,7 @@ std::uint32_t MeshOutputType(SpirvEmitterState& state, StageOutputKind kind) {
     if (kind == StageOutputKind::Layer) {
         return TypeU32(state);
     }
-    return IsMeshDistance(kind) ? TypeF32(state) : TypeF32Vector(state, 4u);
+    return IsMeshDistance(kind) || kind == StageOutputKind::PointSize ? TypeF32(state) : TypeF32Vector(state, 4u);
 }
 
 std::uint32_t MeshDistancePointer(SpirvEmitterState& state, const SpirvOutputBinding& output, std::uint32_t vertex) {
@@ -882,7 +883,7 @@ void DefineMeshOutputs(SpirvEmitterState& state) {
             output.meshDataVariable = MeshArray(state, spv::StorageClassPrivate, TypeF32(state), state.laneCount);
             continue;
         }
-        if (output.kind != StageOutputKind::Position && output.kind != StageOutputKind::Parameter && output.kind != StageOutputKind::Layer) {
+        if (output.kind != StageOutputKind::Position && output.kind != StageOutputKind::Parameter && output.kind != StageOutputKind::Layer && output.kind != StageOutputKind::PointSize) {
             throw std::runtime_error("unsupported mesh output kind");
         }
         const auto type = MeshOutputType(state, output.kind);
@@ -895,7 +896,7 @@ void DefineMeshOutputs(SpirvEmitterState& state) {
         if (output.kind == StageOutputKind::Parameter) {
             state.module.AddAnnotation(spv::OpDecorate, output.variableId, spv::DecorationLocation, output.location);
         } else if (output.kind != StageOutputKind::Layer) {
-            state.module.AddAnnotation(spv::OpDecorate, output.variableId, spv::DecorationBuiltIn, spv::BuiltInPosition);
+            state.module.AddAnnotation(spv::OpDecorate, output.variableId, spv::DecorationBuiltIn, output.kind == StageOutputKind::PointSize ? spv::BuiltInPointSize : spv::BuiltInPosition);
         }
         if (output.kind == StageOutputKind::Position) {
             state.module.AddAnnotation(spv::OpDecorate, output.variableId, spv::DecorationInvariant);
@@ -946,6 +947,15 @@ void EmitMeshEntryPoint(SpirvEmitterState& state) {
     EmitLabel(state, state.module.AllocateId());
     for (std::uint32_t half = 0; half < state.laneCount; half++) {
         state.module.AddFunction(spv::OpStore, MeshElement(state, state.meshPrimitiveData, spv::StorageClassPrivate, TypeU32(state), ConstantU32(state, half)), ConstantU32(state, 0x80000000u));
+        if (state.inputInfo.vertex->pointList) {
+            const auto& vertex = *state.inputInfo.vertex;
+            const bool fromVertex = (vertex.paClVsOutCntl & (1u << 16u)) != 0u;
+            if (!fromVertex && !(vertex.pointSize > 0.0f)) FailEmit("mesh points need a positive PA_SU_POINT_SIZE");
+            if (fromVertex && !(vertex.pointSizeMax > 0.0f)) FailEmit("mesh point sizes need a positive PA_SU_POINT_MINMAX maximum");
+            const auto size = fromVertex ? std::clamp(vertex.pointSize, PointSizeFloor(vertex), vertex.pointSizeMax) : vertex.pointSize;
+            state.laneHalf = half;
+            state.module.AddFunction(spv::OpStore, MeshOutputPointer(state, StageOutputKind::PointSize), ConstantF32(state, std::bit_cast<std::uint32_t>(size)));
+        }
     }
     const auto firstInvocation = state.module.AllocateId();
     state.laneHalf = 0;
