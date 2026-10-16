@@ -677,6 +677,7 @@ void CheckDepthTarget(Context context, VkFormat format, std::uint32_t fragments,
     }
     const auto view = DepthSurfaceView(context, target);
     Require(DepthSurfaceView(context, target) == view, "native depth attachment did not reuse its image");
+    NoteDepthSurfaceWrite(context, target);
     std::array<std::byte, 1> beforeSampling{};
     TargetRefuses([&] { AgcDriver::GuestMemory::Read(target.address + bytes - 1u, beforeSampling); }, "sample-preserving guest publication");
     TargetRefuses([&] { RequireNoMultisampleTarget(target.htileAddress + metadataBytes - 1u, 1u, "a DMA copy"); }, "sample-preserving guest publication");
@@ -831,6 +832,59 @@ void CheckDepthTarget(Context context, VkFormat format, std::uint32_t fragments,
     texture.reset();
     arrayTexture.reset();
     std::printf("Native depth format=%u samples=%u clear=%u iterate256=%u: imported, rasterized twice, sampled and refused conflicts\n", static_cast<std::uint32_t>(format), fragments, one, iterate256);
+}
+
+void CheckUnwrittenGuestAccess(Context context, VkFormat format, std::uint32_t fragments) {
+    const VkExtent2D extent{5u, 3u};
+    const auto bytes = static_cast<std::size_t>(MultisampledDepthBytes_nid_no_patch(extent, format == VK_FORMAT_D16_UNORM ? 2u : 4u, fragments));
+    const auto metadataBytes = static_cast<std::size_t>(HtileMetadataBytes(extent));
+    TargetMemory memory(bytes), metadata(65536u), unrelated(65536u);
+    const auto guestByte = [](std::size_t offset) { return static_cast<std::byte>(offset * 7u + 3u); };
+    for (std::size_t offset = 0u; offset < bytes; ++offset) memory.Data()[offset] = guestByte(offset);
+    std::memset(metadata.Data(), 0, metadataBytes);
+    DepthTarget target{memory.Address(), 0u, extent, format, 0.0f, 0u, metadata.Address(), false, fragments};
+    target.depthSwizzle = 24u;
+    target.iterate256 = target.htilePipeAligned = target.htileDepthOnly = true;
+    Recorder recorder(context);
+    recorder.Activate();
+    struct Cleanup {
+        Recorder& recorder;
+        Context context;
+        ~Cleanup() { recorder.Sync(); ClearCachedTextures(context.device); ClearDepthSurfaces(context.device); }
+    } cleanup{recorder, context};
+    const auto resident = [&] { return HasResidentDepthGuards_nid_no_patch() && DepthSurfaceAt(target.address); };
+    auto view = DepthSurfaceView(context, target);
+    Require(view != VK_NULL_HANDLE && resident(), "unwritten native depth fixture has no resident owner");
+    auto otherDevice = context;
+    otherDevice.device = VK_NULL_HANDLE;
+    NoteDepthSurfaceWrite(otherDevice, target);
+    auto unattached = target;
+    unattached.address += 65536u;
+    NoteDepthSurfaceWrite(context, unattached);
+    std::array<std::byte, 1> probe{};
+    AgcDriver::GuestMemory::Read(unrelated.Address(), probe);
+    Require(resident(), "an unrelated guest read retired a native depth surface");
+    for (const bool readMetadata : {false, true}) {
+        if (readMetadata) RequireNoMultisampleTarget(target.htileAddress + metadataBytes - 1u, 1u, "a DMA copy");
+        else {
+            AgcDriver::GuestMemory::Read(target.address + bytes - 1u, probe);
+            Require(probe[0] == guestByte(bytes - 1u), "a guest read over an unwritten native depth surface did not return its guest bytes");
+        }
+        Require(!resident(), "a guest access left an unwritten native depth surface resident");
+        RequireNoResidentDepthRead_nid_no_patch(target.address, bytes);
+        RequireNoResidentDepthRead_nid_no_patch(target.htileAddress, metadataBytes);
+        recorder.Sync();
+        const auto rebound = DepthSurfaceView(context, target);
+        Require(rebound != VK_NULL_HANDLE && rebound != view && resident(), "rebinding after a guest access did not import a new native depth surface");
+        view = rebound;
+    }
+    NoteDepthSurfaceWrite(context, target);
+    TargetRefuses([&] { AgcDriver::GuestMemory::Read(target.address, probe); }, "sample-preserving guest publication");
+    TargetRefuses([&] { RequireNoMultisampleTarget(target.htileAddress, 1u, "a DMA copy"); }, "sample-preserving guest publication");
+    Require(resident(), "a refused guest access retired a written native depth surface");
+    for (std::size_t offset = 0u; offset < bytes; ++offset) Require(memory.Data()[offset] == guestByte(offset), "retiring an unwritten native depth surface changed its guest bytes");
+    Require(std::all_of(metadata.Data(), metadata.Data() + metadataBytes, [](std::byte value) { return value == std::byte{0}; }), "retiring an unwritten native depth surface changed its HTILE");
+    std::printf("Native depth format=%u samples=%u: guest access retired the unwritten surface and refused the written one\n", static_cast<std::uint32_t>(format), fragments);
 }
 
 void CheckHtileRouting(Context context, VkFormat format, std::uint32_t fragments) {
@@ -1019,6 +1073,7 @@ void CheckRetirement(Context context, VkFormat format, std::uint32_t samples, st
     const auto words = DepthSampleWords(target);
     const auto resource = DecodeTextureResource(words);
     const auto firstView = DepthSurfaceView(context, target);
+    NoteDepthSurfaceWrite(context, target);
     auto firstTexture = DepthSurfaceTexture(context, words, resource, VkComponentMapping{});
     Require(firstTexture != nullptr, "retirement fixture has no native sampled view");
     ColorTarget color{colorMemory.Address(), extent, VK_FORMAT_R8G8B8A8_UNORM, extent.width * extent.height * 4u, 0u};
@@ -1167,6 +1222,7 @@ int main(int argc, char** argv) {
                     for (const bool iterate256 : {true, false}) { CheckDepthTarget(context, format, samples, one, false, std::nullopt, ClearFault::None, iterate256); ++checked; }
                 }
                 CheckHtileRouting(context, format, samples);
+                CheckUnwrittenGuestAccess(context, format, samples);
             }
         }
         CheckEligibility(context);
