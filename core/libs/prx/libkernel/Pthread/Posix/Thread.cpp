@@ -94,6 +94,7 @@ int APS5_VABI cpuset_setaffinity_nid_postfix(int level, int which, std::int64_t 
     for (std::size_t index = sizeof(KernelCpumask); index < size; ++index) {
         if (bytes[index] != 0) return fail(GuestEinval);
     }
+    if (level < 1 || level > 3) return fail(GuestEinval);
     auto* self = scePthreadSelf();
     if (which == WhichThread) {
         if (id != -1 && id != self->tid && !LiveGuestThreadExists(id)) return fail(GuestEsrch);
@@ -104,7 +105,6 @@ int APS5_VABI cpuset_setaffinity_nid_postfix(int level, int which, std::int64_t 
     } else {
         return fail(GuestEinval);
     }
-    if (level < 1 || level > 3) return fail(GuestEinval);
     if (level != LevelWhich) NotImplemented_nid_no_patch("cpuset_setaffinity other than the calling thread or process");
     KernelCpumask requested = 0;
     std::memcpy(&requested, bytes, sizeof(requested));
