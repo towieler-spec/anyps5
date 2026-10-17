@@ -3,6 +3,7 @@
 #include "prx/libSceAgcDriver/Graphics/include/Draw.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/GuestBufferMemory.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/Recorder.hpp"
+#include "prx/libSceAgcDriver/Graphics/include/ShaderResources.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/Texture.hpp"
 #include "prx/libc/include/GuestAllocations.hpp"
 #include "prx/libc/include/GuestArena.hpp"
@@ -14,6 +15,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <mutex>
 #include <span>
 #include <vector>
@@ -25,6 +27,14 @@
 #else
 #include <sys/mman.h>
 #endif
+
+namespace AgcDriver {
+
+struct VulkanDeviceTestAccess {
+    static Graphics::Context ContextOf(const VulkanDevice& device) { return device.graphicsContext(); }
+};
+
+}
 
 namespace {
 
@@ -40,7 +50,7 @@ alignas(256) constexpr std::array<std::uint32_t, 11> WriteCode{
 
 class GuestSurface {
 public:
-    GuestSurface() {
+    explicit GuestSurface(bool registerMemory = true) {
 #ifdef _WIN32
         block = static_cast<std::uint8_t*>(GuestArena::GuestArenaAllocate_nid_postfix(SurfaceBytes, SurfaceBytes));
         GuestArena::GuestArenaCommit_nid_postfix(block, SurfaceBytes, PAGE_READWRITE, SurfaceBytes);
@@ -55,12 +65,11 @@ public:
         block = reinterpret_cast<std::uint8_t*>(aligned);
         if (AgcDriver::GuestMemory::WriteWatched()) GuestWriteWatch::GuestWriteWatchRegister_nid_postfix(block, SurfaceBytes);
 #endif
-        GuestAllocations::Mutation mutation;
-        mutation.Add(block, SurfaceBytes, true, true, true);
+        if (registerMemory) Register();
     }
 
     ~GuestSurface() {
-        {
+        if (registered) {
             GuestAllocations::Mutation mutation;
             mutation.Remove(block);
         }
@@ -76,10 +85,67 @@ public:
     GuestSurface(const GuestSurface&) = delete;
     GuestSurface& operator=(const GuestSurface&) = delete;
     std::uint8_t* Data() { return block; }
+    void Register() {
+        Require(!registered, "surface byte copy: memory is already registered");
+        GuestAllocations::Mutation().Add(block, SurfaceBytes, true, true, true);
+        registered = true;
+    }
 
 private:
     std::uint8_t* block = nullptr;
+    bool registered = false;
 };
+
+void CheckPreflight(AgcDriver::VulkanDevice& device, GuestSurface& source, GuestSurface& destination, std::uint32_t height, bool& unavailable) {
+    std::vector<std::byte> initial(SurfaceBytes), actual(SurfaceBytes);
+    for (std::size_t at = 0; at < SurfaceBytes; ++at) initial[at] = static_cast<std::byte>(0x31u + at % 67u);
+    std::memcpy(source.Data(), initial.data(), initial.size());
+    std::memset(destination.Data(), 0xa5, SurfaceBytes);
+    const auto from = reinterpret_cast<std::uintptr_t>(source.Data());
+    const auto to = reinterpret_cast<std::uintptr_t>(destination.Data());
+    const auto context = AgcDriver::VulkanDeviceTestAccess::ContextOf(device);
+    const bool expectedAlias = height == 128 && std::getenv("APS5_NO_COPY_ALIAS") == nullptr;
+    AgcDriver::VulkanDevice::CopyOutcome outcome{};
+    {
+        std::lock_guard lock(AgcDriver::GuestMemory::GpuMutex());
+        if (AgcDriver::Graphics::HostImportFor(context, to, SurfaceBytes) == nullptr) {
+            unavailable = true;
+            return;
+        }
+        Require(AgcDriver::Graphics::HostImportFor(context, from, SurfaceBytes) == nullptr, "surface byte copy: preflight source unexpectedly has a host import");
+        AgcDriver::Graphics::GuestTextureResource resource{};
+        resource.baseAddress = from;
+        resource.width = Width;
+        resource.height = height;
+        resource.mipCount = 1;
+        resource.tileMode = AgcDriver::Graphics::TextureTileMode::kStandard64KB;
+        resource.dimension = AgcDriver::Graphics::TextureDimension::k2D;
+        resource.format = 71;
+        resource.dstSelX = 4;
+        resource.dstSelY = 5;
+        resource.dstSelZ = 6;
+        resource.dstSelW = 7;
+        const auto image = AgcDriver::Graphics::CachedStorageSurface(context, resource);
+        Require(image->GuestBytes() == SurfaceBytes && image->ImageCoversGuestBytes() == (height == 128), "surface byte copy: preflight image has unexpected byte coverage");
+        Require(device.GpuCopyPossible(to, from, SurfaceBytes) == expectedAlias, "surface byte copy: preflight accepted incomplete image bytes or refused a dense alias");
+        if (!expectedAlias) {
+            source.Register();
+            Require(AgcDriver::Graphics::HostImportFor(context, from, SurfaceBytes) != nullptr, "surface byte copy: registered preflight source cannot be imported");
+        }
+        Require(device.GpuCopyPossible(to, from, SurfaceBytes), "surface byte copy: preflight refused the available GPU copy");
+        outcome = device.CopyBuffer(to, from, SurfaceBytes, 0, std::numeric_limits<std::size_t>::max(), 0, 0, 0, [](std::span<const std::byte>, std::uint64_t) {});
+        Require(outcome.path == (expectedAlias ? 3 : 1), "surface byte copy: preflight and execution selected different GPU paths");
+    }
+    {
+        std::lock_guard lock(AgcDriver::GuestMemory::GpuMutex());
+        device.WaitIdle();
+    }
+    AgcDriver::GuestMemory::Read(to, actual);
+    std::size_t differences = 0;
+    for (std::size_t at = 0; at < SurfaceBytes; ++at) differences += initial[at] != actual[at];
+    std::printf("preflight height=%u unimported_allowed=%d copy_path=%d incorrect_bytes=%zu\n", height, expectedAlias, static_cast<int>(outcome.path), differences);
+    Require(differences == 0, "surface byte copy: preflight GPU path did not preserve all raw bytes");
+}
 
 void Drain() {
     AgcDriverSuspendPoint_nid_postfix();
@@ -176,12 +242,15 @@ bool Check(GuestSurface& source, GuestSurface& destination, GuestSurface& reader
 
 int main() {
     try {
+        bool unavailable = false;
         {
+            GuestSurface preflightPaddedSource(false), preflightPaddedDestination, preflightDenseSource(false), preflightDenseDestination;
             const auto device = OpenVulkanTestDevice();
             if (!device) return VulkanTestSkipped;
+            CheckPreflight(*device, preflightPaddedSource, preflightPaddedDestination, 120, unavailable);
+            CheckPreflight(*device, preflightDenseSource, preflightDenseDestination, 128, unavailable);
         }
         GuestSurface paddedSource, paddedDestination, cachedSource, cachedDestination, denseSource, denseDestination, reader;
-        bool unavailable = false;
         bool correct = Check(paddedSource, paddedDestination, reader, 120, false, unavailable);
         correct = Check(cachedSource, cachedDestination, reader, 120, true, unavailable) && correct;
         correct = Check(denseSource, denseDestination, reader, 128, false, unavailable) && correct;
