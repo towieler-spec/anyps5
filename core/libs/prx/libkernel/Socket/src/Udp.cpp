@@ -1237,11 +1237,11 @@ static std::int64_t MessageLength(const GuestMsghdr* message) {
     }
     return static_cast<std::int64_t>(total);
 }
+constexpr int GuestControlCloseOnExec = 0x40000;
 #ifndef _WIN32
 constexpr int GuestSocketLevel = 0xffff;
 constexpr int GuestRights = 1;
 constexpr int GuestControlTruncated = 0x20;
-constexpr int GuestControlCloseOnExec = 0x40000;
 constexpr std::size_t GuestControlHeader = 16;
 constexpr std::size_t MostPassedDescriptors = 253;
 std::size_t GuestControlSpace(std::size_t bytes) {
