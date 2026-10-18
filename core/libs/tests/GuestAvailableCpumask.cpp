@@ -355,6 +355,21 @@ int main() {
     Require(throws([&] { cpuset_setaffinity_nid_postfix(2, 1, -1, 8, processSet); }));
     Require(throws([&] { cpuset_setaffinity_nid_postfix(3, 3, -1, 8, processSet); }));
     Require(throws([&] { cpuset_setaffinity_nid_postfix(3, 4, -1, 8, processSet); }));
+    Require(throws([&] { cpuset_setaffinity_nid_postfix(3, 5, 0, 8, processSet); }));
+    Require(throws([&] { cpuset_setaffinity_nid_postfix(3, 7, 1, 8, processSet); }));
+    Require(throws([&] { cpuset_setaffinity_nid_postfix(3, 8, 1, 8, processSet); }));
+    Require(throws([&] { cpuset_setaffinity_nid_postfix(2, 2, -1, 8, processSet); }));
+    Require(throws([&] { cpuset_setaffinity_nid_postfix(2, 3, -1, 8, processSet); }));
+    for (const int level : {1, 2}) {
+        for (const int which : {4, 6, 7, 8, 99}) {
+            *__error_nid_postfix() = 0;
+            Require(cpuset_setaffinity_nid_postfix(level, which, -1, 8, processSet) == -1 && *__error_nid_postfix() == GUEST_EINVAL);
+        }
+        *__error_nid_postfix() = 0;
+        Require(cpuset_setaffinity_nid_postfix(level, 1, 999999, 8, processSet) == -1 && *__error_nid_postfix() == GUEST_ESRCH);
+    }
+    *__error_nid_postfix() = 0;
+    Require(cpuset_setaffinity_nid_postfix(3, 6, 0, 8, processSet) == -1 && *__error_nid_postfix() == GUEST_EINVAL);
     std::promise<void> holdOther;
     auto heldOther = holdOther.get_future();
     RemoteThread otherArg;
