@@ -157,7 +157,7 @@ static_assert(fieldCount<ResourceBlock>() == 4, "ResourceBlock changed: update t
 static_assert(fieldCount<SrtRead>() == 2, "SrtRead changed: update the plan encoder");
 static_assert(fieldCount<UniformFill>() == 5, "UniformFill changed: update the plan encoder");
 static_assert(fieldCount<UniformFillPlan>() == 2, "UniformFillPlan changed: update the plan encoder");
-static_assert(fieldCount<DescriptorBinding>() == 22, "DescriptorBinding changed: update the binding plan encoder");
+static_assert(fieldCount<DescriptorBinding>() == 23, "DescriptorBinding changed: update the binding plan encoder");
 static_assert(fieldCount<PreparedDescriptorBinding>() == 8, "PreparedDescriptorBinding changed: update the binding plan encoder");
 static_assert(fieldCount<PreparedImageMetadata>() == 3, "PreparedImageMetadata changed: update the binding plan encoder");
 static_assert(fieldCount<DescriptorBindingPlan>() == 5, "DescriptorBindingPlan changed: update the binding plan encoder");
