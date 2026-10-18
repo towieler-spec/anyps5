@@ -622,7 +622,7 @@ VkClearColorValue singleClearColor(const ColorTarget& target) {
     const auto color = recordedSingleClear(target);
     Require(color.has_value(), "multisampled DCC comp-to-single keys without a recorded clear color are not implemented");
     const auto elementBytes = static_cast<std::size_t>(target.elementBytes);
-    Require(elementBytes == 1 || elementBytes == 2 || elementBytes == 4, "multisampled DCC comp-to-single clears of texels wider than 32 bits are not implemented");
+    Require(elementBytes == 1 || elementBytes == 2 || elementBytes == 4 || elementBytes == 8 || elementBytes == 16, "multisampled DCC comp-to-single clears of this texel size are not implemented");
     std::array<std::uint32_t, 4> pattern{};
     for (std::size_t offset = 0; offset < sizeof(pattern); offset += elementBytes) std::memcpy(reinterpret_cast<std::byte*>(pattern.data()) + offset, color->data(), elementBytes);
     VkClearColorValue clear{};

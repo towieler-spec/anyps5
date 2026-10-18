@@ -3428,7 +3428,19 @@ void multisampleTests() {
     wideCleared.samples = wide.samples;
     AgcDriver::Graphics::NoteMultisampledSingleClear(wideCleared, {0x3c003c00u, 0x3c003c00u, 0u, 0u});
     const std::vector<std::byte> wideKeys(AgcDriver::Graphics::MultisampledDccBytes(wide), std::byte{0x10});
-    expectFailure([&] { MultisampledDccClear(wide, wideKeys, {}); }, "wider than 32 bits");
+    clear = MultisampledDccClear(wide, wideKeys, {});
+    Require(clear.float32[0] == 1.0f && clear.float32[1] == 1.0f && clear.float32[2] == 1.0f && clear.float32[3] == 1.0f, "comp-to-single keys did not clear to the recorded RGBA16F color");
+    auto widest = wide;
+    widest.format = VK_FORMAT_R32G32B32A32_SFLOAT;
+    widest.elementBytes = 16;
+    widest.address = widest.surfaceAddress = 0x48000000;
+    widest.dccAddress = 0x58000000;
+    auto widestCleared = wideCleared;
+    widestCleared.baseAddress = widest.surfaceAddress;
+    AgcDriver::Graphics::NoteMultisampledSingleClear(widestCleared, {0x3f800000u, 0x3f000000u, 0u, 0x3f800000u});
+    const std::vector<std::byte> widestKeys(AgcDriver::Graphics::MultisampledDccBytes(widest), std::byte{0x10});
+    clear = MultisampledDccClear(widest, widestKeys, {});
+    Require(clear.float32[0] == 1.0f && clear.float32[1] == 0.5f && clear.float32[2] == 0.0f && clear.float32[3] == 1.0f, "comp-to-single keys did not clear to the recorded RGBA32F color");
 
     using AgcDriver::Graphics::TakeMultisampledClear;
     halfFloat.clearWords = {0x3c003c00u, 0x3c003c00u};
