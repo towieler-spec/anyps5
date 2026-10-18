@@ -3,6 +3,7 @@
 #include "prx/libkernel/KernelErrors.hpp"
 #include "prx/libkernel/System/include/HostCpu.hpp"
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -70,7 +71,7 @@ const SystemString* FindSystemString(const int* name) {
 }
 
 bool IsLeafMib(const int* name) {
-    return (name[0] == 6 && (name[1] == 2 || name[1] == 3 || name[1] == 5 || name[1] == 7)) || (name[0] == 1 && name[1] == 37);
+    return (name[0] == 6 && (name[1] == 2 || name[1] == 3 || name[1] == 5 || name[1] == 7)) || (name[0] == 1 && (name[1] == 37 || name[1] == 50));
 }
 
 }
@@ -217,6 +218,15 @@ int APS5_VABI sysctl_nid_postfix(const int* name, std::uint32_t nameLength, void
         *oldLength = count;
         return 0;
     }
+    if (nameLength == 2 && name[0] == 1 && name[1] == 50) {
+        if (newValue != nullptr) throw std::runtime_error(std::string(__func__) + ": writing kern.rng_pseudo is unverified");
+        std::array<std::uint8_t, 64> bytes{};
+        if (oldValue != nullptr && oldLength != nullptr) {
+            static std::random_device device;
+            for (auto& byte : bytes) byte = static_cast<std::uint8_t>(device());
+        }
+        return CopyOut(bytes.data(), bytes.size(), oldValue, oldLength);
+    }
     if (nameLength > 2 && (IsLeafMib(name) || FindSystemString(name) != nullptr)) {
         *__error_nid_postfix() = 20;
         return -1;
@@ -324,6 +334,7 @@ int APS5_VABI sysctlnametomib_nid_postfix(const char* name, int* mib, std::size_
         {"hw.physmem", {6, 5}, 2},
         {"hw.realmem", {6, 12}, 2},
         {"kern.arandom", {1, 37}, 2},
+        {"kern.rng_pseudo", {1, 50}, 2},
         {"kern.proc.pathname", {1, 14, 12}, 3},
     };
     constexpr std::size_t MaximumPath = 1024;
