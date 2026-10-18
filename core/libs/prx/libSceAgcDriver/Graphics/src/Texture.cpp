@@ -7,6 +7,7 @@
 #include "prx/libSceAgcDriver/Graphics/include/BufferPool.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/Resources.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/Recorder.hpp"
+#include "prx/libSceAgcDriver/Graphics/include/RangeIndex.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/GuestBufferMemory.hpp"
 // For the declaration of PendingStorageOverlaps, defined below.
 #include "prx/libSceAgcDriver/Graphics/include/ShaderResources.hpp"
@@ -1412,6 +1413,11 @@ StorageTexture::StorageTexture(const Context& context, TextureDetiler& detiler, 
 
 namespace {
 
+bool RefreshLookupsEnabled() {
+    static const bool enabled = std::getenv("APS5_NO_REFRESH_LOOKUP_CACHE") == nullptr;
+    return enabled;
+}
+
 class PendingList {
 public:
     using iterator = std::vector<StorageTexture*>::iterator;
@@ -1420,14 +1426,23 @@ public:
     void push_back(StorageTexture* texture) {
         textures.push_back(texture);
         ++version;
+        if (RefreshLookupsEnabled()) index.Insert(texture, texture->Descriptor().baseAddress, texture->Descriptor().baseAddress + texture->GuestBytes());
     }
     iterator erase(iterator it) {
         ++version;
+        if (RefreshLookupsEnabled()) index.Remove(*it, (*it)->Descriptor().baseAddress);
         return textures.erase(it);
     }
     void remove(const StorageTexture* texture) {
-        if (std::erase(textures, texture) != 0) ++version;
+        if (std::erase(textures, texture) != 0) {
+            ++version;
+            if (RefreshLookupsEnabled()) index.Remove(const_cast<StorageTexture*>(texture), texture->Descriptor().baseAddress, true);
+        }
     }
+    template <class Visit>
+    bool Overlapping(std::uint64_t address, std::uint64_t bytes, Visit&& visit) { return index.Overlapping(address, bytes, visit); }
+    template <class Visit>
+    bool StartingAt(std::uint64_t address, Visit&& visit) const { return index.StartingAt(address, visit); }
     bool MayOverlap(std::uint64_t address, std::size_t bytes) {
         if (textures.empty() || bytes == 0) return false;
         if (indexed != version) rebuild();
@@ -1450,6 +1465,7 @@ private:
         indexed = version;
     }
     std::vector<StorageTexture*> textures;
+    RangeIndex<StorageTexture*> index;
     std::vector<std::pair<std::uint64_t, std::uint64_t>> ranges;
     std::uint64_t version = 0;
     std::uint64_t indexed = ~std::uint64_t{0};
@@ -2029,7 +2045,7 @@ bool StorageTexture::Refresh() {
     // since `generation` need no comparison.
     const auto current = GuestMemory::CollectWrites(descriptor.baseAddress, static_cast<std::size_t>(guestBytes));
     // Per tracked layer: changed since its generation (a keys change makes every layer stale).
-    std::vector<bool> changed(trackedLayers, false);
+    std::vector<bool> changed;
     // Per 64 KiB block of the surface (blockGenerations): stamped since its layer's generation, and
     // by a CPU store; scanned once when anything changed.
     std::vector<std::uint64_t> generations;
@@ -2069,6 +2085,9 @@ bool StorageTexture::Refresh() {
         const auto keysStart = profile ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
         keys = ProvedKeys();
         if (profile && descriptor.dccAddress != 0) LookupOutcomes::Add(LookupOutcomes::DccScan, keysStart);
+        const bool quickCandidate = RefreshLookupsEnabled() && alias == nullptr && keys == uploadedKeys && blockUnits;
+        const bool quick = quickCandidate && GuestMemory::UnchangedSince(descriptor.baseAddress, static_cast<std::size_t>(guestBytes), generation);
+        if (!quick) changed.assign(trackedLayers, false);
         if (keys != uploadedKeys) {
             changed.assign(trackedLayers, true);
             unchanged = false;
@@ -2076,7 +2095,7 @@ bool StorageTexture::Refresh() {
             // Which units the CPU stamped still decides what the drop rule below may drop.
             if (blockUnits) scanBlocks();
         } else if (blockUnits) {
-            if (!GuestMemory::UnchangedSince(descriptor.baseAddress, static_cast<std::size_t>(guestBytes), generation)) {
+            if (quickCandidate ? !quick : !GuestMemory::UnchangedSince(descriptor.baseAddress, static_cast<std::size_t>(guestBytes), generation)) {
                 // One stamp scan for every unit (each is one stamp block); the unchanged units move
                 // to the current generation, so the whole-surface check answers next time.
                 scanBlocks();
@@ -2115,7 +2134,7 @@ bool StorageTexture::Refresh() {
         // the same bytes read differently, and a changed unit holding pending results must take
         // the drop rule below (the image holds the results, `original` what the CPU wrote back).
         bool pendingChanged = false;
-        for (std::uint32_t layer = 0; layer < trackedLayers; ++layer) {
+        for (std::uint32_t layer = 0; !quick && layer < trackedLayers; ++layer) {
             if (changed[layer] && layerPending[layer]) pendingChanged = true;
         }
         if (!unchanged && !keysChanged && !pendingChanged && originalHolds(descriptor.baseAddress, static_cast<std::size_t>(guestBytes)) && equalsOriginal()) {
@@ -2124,7 +2143,7 @@ bool StorageTexture::Refresh() {
         }
         // Only the direct path uploads the selected layers alone (see upload); the others replace
         // the whole image, so every pending layer's results are stored first.
-        direct = keys == DccKeys::Uncompressed && HostImportFor(context, descriptor.baseAddress, static_cast<std::size_t>(guestBytes)) != nullptr;
+        direct = keys == DccKeys::Uncompressed && (RefreshLookupsEnabled() ? HostImportForCached(context, descriptor.baseAddress, static_cast<std::size_t>(guestBytes), importLookup) : HostImportFor(context, descriptor.baseAddress, static_cast<std::size_t>(guestBytes))) != nullptr;
         if (alias != nullptr && direct) {
             // The alias's pending units that nothing stamped since its generation (a CPU store or a
             // driver store there wins over its results, as at its own write-back) are taken from
@@ -2272,7 +2291,8 @@ bool StorageTexture::otherPendingOverlaps() const {
     auto& pending = Pending();
     std::lock_guard lock(pending.mutex);
     const auto other = [&](const StorageTexture* texture) { return texture != this && texture->overlaps(descriptor.baseAddress, static_cast<std::size_t>(guestBytes)); };
-    return std::any_of(pending.textures.begin(), pending.textures.end(), other) || std::any_of(pending.flushing.begin(), pending.flushing.end(), other);
+    const bool pendingOverlap = RefreshLookupsEnabled() ? pending.textures.Overlapping(descriptor.baseAddress, guestBytes, [&](StorageTexture* texture) { return texture != this; }) : std::any_of(pending.textures.begin(), pending.textures.end(), other);
+    return pendingOverlap || std::any_of(pending.flushing.begin(), pending.flushing.end(), other);
 }
 
 bool StorageTexture::refreshProved() {
@@ -4662,9 +4682,17 @@ std::shared_ptr<StorageTexture> StorageTexture::pendingAlias() const {
     {
         auto& pending = Pending();
         std::lock_guard lock(pending.mutex);
-        for (auto* texture : pending.textures) {
-            if (texture == this || texture->descriptor.baseAddress != descriptor.baseAddress || texture->guestBytes != guestBytes || !texture->blockUnits) continue;
+        const auto consider = [&](StorageTexture* texture) {
+            if (texture == this || texture->descriptor.baseAddress != descriptor.baseAddress || texture->guestBytes != guestBytes || !texture->blockUnits) return;
             if (auto alive = texture->weak_from_this().lock()) candidates.push_back(std::move(alive));
+        };
+        if (RefreshLookupsEnabled()) {
+            pending.textures.StartingAt(descriptor.baseAddress, [&](StorageTexture* texture) {
+                consider(texture);
+                return false;
+            });
+        } else {
+            for (auto* texture : pending.textures) consider(texture);
         }
     }
     for (const auto& candidate : candidates) {
