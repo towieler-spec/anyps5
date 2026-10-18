@@ -394,7 +394,38 @@ void guardReads(std::uint64_t address, std::size_t bytes) {
     RequireNoMultisampleTarget(address, bytes, "a CPU read");
 }
 
+struct RecordedSingleClear {
+    std::uint64_t surface = 0;
+    std::uint32_t pipeBankXor = 0;
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    std::uint32_t samples = 0;
+    std::array<std::uint32_t, 4> color{};
+};
+
+std::mutex& singleClearsMutex() {
+    static std::mutex mutex;
+    return mutex;
+}
+
+std::vector<RecordedSingleClear>& singleClears() {
+    static std::vector<RecordedSingleClear> list;
+    return list;
+}
+
+std::atomic<bool>& anySingleClears() {
+    static std::atomic<bool> any{false};
+    return any;
+}
+
+void forgetSingleClears(std::uintptr_t address, std::size_t bytes) {
+    std::lock_guard lock(singleClearsMutex());
+    std::erase_if(singleClears(), [&](const RecordedSingleClear& clear) { return clear.surface >= address && clear.surface - address < bytes; });
+    anySingleClears().store(!singleClears().empty(), std::memory_order_release);
+}
+
 void retireUnmapped(std::uintptr_t address, std::size_t bytes) {
+    forgetSingleClears(address, bytes);
     RetireUnmappedDepth_nid_no_patch(address, bytes);
     std::unique_lock lock(guardedMutex());
     std::erase_if(guarded(), [&](const auto& range) {
@@ -520,7 +551,7 @@ void InstallResidentImageReadGuard_nid_no_patch() {
 void UpdateResidentImageUnmapObserver_nid_no_patch() {
     static std::mutex mutex;
     std::lock_guard lock(mutex);
-    GuestAllocations::GuestAllocationsSetUnmapObserver_nid_postfix(anyGuarded().load(std::memory_order_acquire) || HasResidentDepthGuards_nid_no_patch() ? &retireUnmapped : nullptr);
+    GuestAllocations::GuestAllocationsSetUnmapObserver_nid_postfix(anyGuarded().load(std::memory_order_acquire) || anySingleClears().load(std::memory_order_acquire) || HasResidentDepthGuards_nid_no_patch() ? &retireUnmapped : nullptr);
 }
 
 void MultisampledCmask::NoteFill(std::uint64_t fillAddress, std::size_t fillBytes, std::uint32_t pattern) {
@@ -592,28 +623,10 @@ std::size_t MultisampledDccBytes(const ColorTarget& target) {
 
 namespace {
 
-struct RecordedSingleClear {
-    std::uint64_t surface = 0;
-    std::uint32_t width = 0;
-    std::uint32_t height = 0;
-    std::uint32_t samples = 0;
-    std::array<std::uint32_t, 4> color{};
-};
-
-std::mutex& singleClearsMutex() {
-    static std::mutex mutex;
-    return mutex;
-}
-
-std::vector<RecordedSingleClear>& singleClears() {
-    static std::vector<RecordedSingleClear> list;
-    return list;
-}
-
 std::optional<std::array<std::uint32_t, 4>> recordedSingleClear(const ColorTarget& target) {
     std::lock_guard lock(singleClearsMutex());
     for (const auto& clear : singleClears()) {
-        if (clear.surface == target.surfaceAddress && clear.width == target.extent.width && clear.height == target.extent.height && clear.samples == target.samples) return clear.color;
+        if (clear.surface == target.surfaceAddress && clear.pipeBankXor == target.pipeBankXor && clear.width == target.extent.width && clear.height == target.extent.height && clear.samples == target.samples) return clear.color;
     }
     return std::nullopt;
 }
@@ -641,10 +654,14 @@ std::optional<MultisampledSingleClear> MatchMultisampledSingleClear(std::span<co
 }
 
 void NoteMultisampledSingleClear(const GuestTextureResource& resource, const std::array<std::uint32_t, 4>& color) {
-    std::lock_guard lock(singleClearsMutex());
-    auto& list = singleClears();
-    std::erase_if(list, [&](const RecordedSingleClear& clear) { return clear.surface == resource.baseAddress; });
-    list.push_back({resource.baseAddress, resource.width, resource.height, resource.samples, color});
+    {
+        std::lock_guard lock(singleClearsMutex());
+        auto& list = singleClears();
+        std::erase_if(list, [&](const RecordedSingleClear& clear) { return clear.surface == resource.baseAddress; });
+        list.push_back({resource.baseAddress, resource.pipeBankXor, resource.width, resource.height, resource.samples, color});
+        anySingleClears().store(true, std::memory_order_release);
+    }
+    UpdateResidentImageUnmapObserver_nid_no_patch();
 }
 
 bool TakeMultisampledSingleClear(std::span<const std::uint32_t> code, std::span<const std::uint32_t> userData, const std::array<std::uint32_t, 3>& numThreads) {

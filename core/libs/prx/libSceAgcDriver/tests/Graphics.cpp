@@ -3441,6 +3441,36 @@ void multisampleTests() {
     const std::vector<std::byte> widestKeys(AgcDriver::Graphics::MultisampledDccBytes(widest), std::byte{0x10});
     clear = MultisampledDccClear(widest, widestKeys, {});
     Require(clear.float32[0] == 1.0f && clear.float32[1] == 0.5f && clear.float32[2] == 0.0f && clear.float32[3] == 1.0f, "comp-to-single keys did not clear to the recorded RGBA32F color");
+    auto swizzled = single;
+    swizzled.pipeBankXor = 0x4000;
+    expectFailure([&] { MultisampledDccClear(swizzled, singleKeys, {}); }, "comp-to-single keys without a recorded clear color");
+    constexpr std::size_t reusedBytes = 0x10000;
+    auto* reusedBlock = static_cast<std::byte*>(::operator new(reusedBytes, std::align_val_t{reusedBytes}));
+    const auto mapReused = [&] {
+        auto* mutation = GuestAllocations::GuestAllocationsBegin_nid_postfix();
+        GuestAllocations::GuestAllocationsAdd_nid_postfix(mutation, reusedBlock, reusedBytes, true, true, true);
+        GuestAllocations::GuestAllocationsEnd_nid_postfix(mutation);
+    };
+    const auto unmapReused = [&] {
+        auto* mutation = GuestAllocations::GuestAllocationsBegin_nid_postfix();
+        GuestAllocations::GuestAllocationsRemove_nid_postfix(mutation, reusedBlock);
+        GuestAllocations::GuestAllocationsEnd_nid_postfix(mutation);
+    };
+    mapReused();
+    auto reused = single;
+    reused.address = reused.surfaceAddress = reinterpret_cast<std::uintptr_t>(reusedBlock);
+    auto reusedCleared = cleared;
+    reusedCleared.baseAddress = reused.surfaceAddress;
+    AgcDriver::Graphics::NoteMultisampledSingleClear(reusedCleared, {0xff00ffccu, 0u, 0u, 0u});
+    clear = MultisampledDccClear(reused, singleKeys, {});
+    Require(clear.float32[0] == 204.0f / 255.0f && clear.float32[3] == 1.0f, "comp-to-single keys on mapped guest memory did not clear to the recorded color");
+    unmapReused();
+    mapReused();
+    expectFailure([&] { MultisampledDccClear(reused, singleKeys, {}); }, "comp-to-single keys without a recorded clear color");
+    clear = MultisampledDccClear(single, singleKeys, {});
+    Require(clear.float32[0] == 204.0f / 255.0f, "unmapping one surface dropped another surface's comp-to-single clear");
+    unmapReused();
+    ::operator delete(reusedBlock, std::align_val_t{reusedBytes});
 
     using AgcDriver::Graphics::TakeMultisampledClear;
     halfFloat.clearWords = {0x3c003c00u, 0x3c003c00u};
