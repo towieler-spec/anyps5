@@ -1309,11 +1309,13 @@ int InstallPassed(int native, bool closeOnExec) {
     struct stat status{};
     if (::fstat(native, &status) != 0) throw std::runtime_error("recvmsg: a received descriptor cannot be queried, errno " + std::to_string(errno));
     if (!S_ISSOCK(status.st_mode)) return native;
-    int domain = 0;
+    sockaddr_storage address{};
+    socklen_t addressLength = sizeof(address);
     int type = 0;
-    socklen_t length = sizeof(domain);
-    if (::getsockopt(native, SOL_SOCKET, SO_DOMAIN, &domain, &length) != 0 || ::getsockopt(native, SOL_SOCKET, SO_TYPE, &type, &length) != 0)
+    socklen_t length = sizeof(type);
+    if (::getsockname(native, reinterpret_cast<sockaddr*>(&address), &addressLength) != 0 || ::getsockopt(native, SOL_SOCKET, SO_TYPE, &type, &length) != 0)
         throw std::runtime_error("recvmsg: a received socket cannot be queried, errno " + std::to_string(errno));
+    const int domain = address.ss_family;
     const int family = GuestFromHostSocket(domain);
     const int guestType = GuestFromHostSocketType(type);
     if (family < 0 || guestType < 0) throw std::runtime_error("recvmsg: a received socket of host domain " + std::to_string(domain) + " and type " + std::to_string(type) + " is not supported");
@@ -1393,7 +1395,12 @@ std::int64_t APS5_VABI recvmsg_nid_postfix(int descriptor, GuestMsghdr* message,
         host.msg_iovlen = 1;
         host.msg_control = control.data();
         host.msg_controllen = control.size();
-        received = ::recvmsg(socket->value, &host, NativeReceiveFlags(flags) | ((flags & GuestControlCloseOnExec) != 0 ? MSG_CMSG_CLOEXEC : 0));
+#ifdef MSG_CMSG_CLOEXEC
+        constexpr int receiveCloseOnExec = MSG_CMSG_CLOEXEC;
+#else
+        constexpr int receiveCloseOnExec = 0;
+#endif
+        received = ::recvmsg(socket->value, &host, NativeReceiveFlags(flags) | ((flags & GuestControlCloseOnExec) != 0 ? receiveCloseOnExec : 0));
         if (received < 0) return Fail(NativeError());
         size = host.msg_namelen;
         controlTruncated = (host.msg_flags & MSG_CTRUNC) != 0;
@@ -1404,6 +1411,11 @@ std::int64_t APS5_VABI recvmsg_nid_postfix(int descriptor, GuestMsghdr* message,
                 int handed = -1;
                 std::memcpy(&handed, CMSG_DATA(header) + index * sizeof(int), sizeof(handed));
                 passed.push_back(handed);
+            }
+        }
+        if constexpr (receiveCloseOnExec == 0) {
+            if ((flags & GuestControlCloseOnExec) != 0) {
+                for (const int handed : passed) ::fcntl(handed, F_SETFD, FD_CLOEXEC);
             }
         }
         for (std::size_t index = 0; index < passed.size(); ++index) {
