@@ -4,8 +4,7 @@
 #else
 #include <cerrno>
 #include <csignal>
-#include <cstdio>
-#include <dlfcn.h>
+#include <link.h>
 #include <sys/mman.h>
 #include <unistd.h>
 #endif
@@ -16,8 +15,6 @@
 #include <atomic>
 #include <cstdlib>
 #include <cstring>
-#include <deque>
-#include <memory>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -30,7 +27,7 @@ extern "C" void CallTraceEnter_nid_no_patch();
 namespace {
 
 struct ImportRecord {
-    void* target;
+    void* target = nullptr;
     std::string name;
     std::string library;
     mutable std::atomic<std::uint64_t> calls{0};
@@ -46,15 +43,16 @@ struct RingSlot {
 constexpr std::size_t RingCapacity = 65536;
 constexpr std::size_t ThunkBytes = 24;
 constexpr std::size_t ThunkAreaBytes = 1024 * 1024;
+constexpr std::size_t RecordCapacity = ThunkAreaBytes / ThunkBytes;
 
 std::mutex g_mutex;
-std::deque<ImportRecord> g_records;
 std::unordered_map<void*, void*> g_thunkByTarget;
-std::unique_ptr<RingSlot[]> g_ring;
+std::atomic<ImportRecord*> g_records{nullptr};
+std::atomic<std::size_t> g_recordCount{0};
+std::atomic<RingSlot*> g_ring{nullptr};
 std::atomic<std::uint64_t> g_sequence{0};
 std::uint8_t* g_writable = nullptr;
 std::uint8_t* g_executable = nullptr;
-std::size_t g_thunks = 0;
 
 bool Selected(std::string_view library) {
     const char* value = std::getenv("APS5_TRACE_CALLS");
@@ -109,45 +107,139 @@ void MapThunkArea() {
     g_executable = static_cast<std::uint8_t*>(executable);
 }
 
-struct sigaction g_previousAbort{};
+struct ModuleSegment {
+    std::uint64_t start;
+    std::uint64_t end;
+    std::uint64_t base;
+    char name[64];
+};
 
-void DescribeAddress(std::uint64_t address, char* buffer, std::size_t size) {
-    Dl_info info{};
-    if (dladdr(reinterpret_cast<const void*>(address), &info) != 0 && info.dli_fname != nullptr && info.dli_fbase != nullptr) {
-        const char* slash = std::strrchr(info.dli_fname, '/');
-        const char* name = slash == nullptr ? info.dli_fname : slash + 1;
-        std::snprintf(buffer, size, "0x%016llx %s+0x%llx", static_cast<unsigned long long>(address), *name == '\0' ? "?" : name,
-            static_cast<unsigned long long>(address - reinterpret_cast<std::uint64_t>(info.dli_fbase)));
+struct ModuleMap {
+    std::size_t count;
+    ModuleSegment segments[256];
+};
+
+struct sigaction g_previousAbort{};
+std::atomic<const ModuleMap*> g_modules{nullptr};
+std::atomic<bool> g_reporting{false};
+unsigned long long g_moduleChanges = ~0ull;
+
+void SnapshotModules() {
+    unsigned long long changes = 0;
+    dl_iterate_phdr([](dl_phdr_info* info, std::size_t, void* data) {
+        *static_cast<unsigned long long*>(data) = info->dlpi_adds + info->dlpi_subs;
+        return 1;
+    }, &changes);
+    if (changes == g_moduleChanges) return;
+    g_moduleChanges = changes;
+    auto* map = new ModuleMap{};
+    dl_iterate_phdr([](dl_phdr_info* info, std::size_t, void* data) {
+        auto& modules = *static_cast<ModuleMap*>(data);
+        const char* path = info->dlpi_name != nullptr && *info->dlpi_name != '\0' ? info->dlpi_name : program_invocation_short_name;
+        const char* slash = std::strrchr(path, '/');
+        const char* name = slash == nullptr ? path : slash + 1;
+        for (int index = 0; index < info->dlpi_phnum && modules.count < std::size(modules.segments); ++index) {
+            const auto& header = info->dlpi_phdr[index];
+            if (header.p_type != PT_LOAD || header.p_memsz == 0) continue;
+            auto& segment = modules.segments[modules.count++];
+            segment.base = info->dlpi_addr;
+            segment.start = info->dlpi_addr + header.p_vaddr;
+            segment.end = segment.start + header.p_memsz;
+            std::strncpy(segment.name, name, sizeof(segment.name) - 1);
+        }
+        return 0;
+    }, map);
+    g_modules.store(map, std::memory_order_release);
+}
+
+class ReportLine {
+public:
+    ReportLine& Text(const char* text) {
+        while (*text != '\0' && _length < sizeof(_buffer)) _buffer[_length++] = *text++;
+        return *this;
+    }
+
+    ReportLine& Decimal(std::uint64_t value, std::size_t width = 0) {
+        char digits[20];
+        std::size_t count = 0;
+        do {
+            digits[count++] = static_cast<char>('0' + value % 10);
+            value /= 10;
+        } while (value != 0);
+        for (std::size_t pad = count; pad < width; ++pad) Text(" ");
+        while (count > 0 && _length < sizeof(_buffer)) _buffer[_length++] = digits[--count];
+        return *this;
+    }
+
+    ReportLine& Hex(std::uint64_t value, std::size_t digits) {
+        while (digits < 16 && (value >> (digits * 4)) != 0) ++digits;
+        Text("0x");
+        for (std::size_t index = digits; index > 0 && _length < sizeof(_buffer); --index) {
+            _buffer[_length++] = "0123456789abcdef"[(value >> ((index - 1) * 4)) & 0xf];
+        }
+        return *this;
+    }
+
+    void Write() {
+        Text("\n");
+        std::size_t written = 0;
+        while (written < _length) {
+            const ssize_t result = ::write(STDERR_FILENO, _buffer + written, _length - written);
+            if (result < 0 && errno == EINTR) continue;
+            if (result <= 0) break;
+            written += static_cast<std::size_t>(result);
+        }
+        _length = 0;
+    }
+
+private:
+    char _buffer[512];
+    std::size_t _length = 0;
+};
+
+void DescribeAddress(ReportLine& line, std::uint64_t address) {
+    line.Hex(address, 16);
+    const ModuleMap* modules = g_modules.load(std::memory_order_acquire);
+    if (modules == nullptr) return;
+    for (std::size_t index = 0; index < modules->count; ++index) {
+        const auto& segment = modules->segments[index];
+        if (address < segment.start || address >= segment.end) continue;
+        line.Text(" ").Text(segment.name).Text("+");
+        line.Hex(address - segment.base, 1);
         return;
     }
-    std::snprintf(buffer, size, "0x%016llx", static_cast<unsigned long long>(address));
 }
 
 void ReportCallTrace() {
     static CallTraceEntry entries[64];
+    static CallTraceCount counts[32];
+    ReportLine line;
     const std::size_t count = CopyCallTrace_nid_no_patch(entries, std::size(entries));
     if (count == 0) return;
-    char line[4096 + 64];
-    std::fprintf(stderr, "  last traced system library calls (APS5_TRACE_CALLS):\n");
+    line.Text("  last traced system library calls (APS5_TRACE_CALLS):").Write();
     for (std::size_t index = 0; index < count; ++index) {
-        DescribeAddress(entries[index].returnAddress, line, sizeof(line));
-        std::fprintf(stderr, "    #%llu thread %llu %s %s from %s\n", static_cast<unsigned long long>(entries[index].sequence),
-            static_cast<unsigned long long>(entries[index].thread), entries[index].library, entries[index].name, line);
+        line.Text("    #").Decimal(entries[index].sequence).Text(" thread ").Decimal(entries[index].thread);
+        line.Text(" ").Text(entries[index].library).Text(" ").Text(entries[index].name).Text(" from ");
+        DescribeAddress(line, entries[index].returnAddress);
+        line.Write();
     }
-    static CallTraceCount counts[32];
     std::uint64_t total = 0;
     const std::size_t counted = CopyCallCounts_nid_no_patch(counts, std::size(counts), &total);
     if (counted == 0) return;
-    std::fprintf(stderr, "  most called traced imports (%llu calls in total):\n", static_cast<unsigned long long>(total));
+    line.Text("  most called traced imports (").Decimal(total).Text(" calls in total):").Write();
     for (std::size_t index = 0; index < counted; ++index) {
-        std::fprintf(stderr, "    %12llu %s %s\n", static_cast<unsigned long long>(counts[index].calls), counts[index].library, counts[index].name);
+        line.Text("    ").Decimal(counts[index].calls, 12).Text(" ").Text(counts[index].library).Text(" ").Text(counts[index].name).Write();
     }
 }
 
 void ReportOnAbort(int number, siginfo_t* info, void* context) {
-    std::fprintf(stderr, "[libc] SIGABRT\n");
-    ReportCallTrace();
-    std::fflush(stderr);
+    const int savedErrno = errno;
+    if (!g_reporting.exchange(true, std::memory_order_acq_rel)) {
+        ReportLine line;
+        line.Text("[libc] SIGABRT").Write();
+        ReportCallTrace();
+    }
+    errno = savedErrno;
     if ((g_previousAbort.sa_flags & SA_SIGINFO) != 0) {
         if (g_previousAbort.sa_sigaction != nullptr) g_previousAbort.sa_sigaction(number, info, context);
         return;
@@ -157,8 +249,11 @@ void ReportOnAbort(int number, siginfo_t* info, void* context) {
         g_previousAbort.sa_handler(number);
         return;
     }
-    std::signal(number, SIG_DFL);
-    std::raise(number);
+    struct sigaction fallback{};
+    fallback.sa_handler = SIG_DFL;
+    sigemptyset(&fallback.sa_mask);
+    sigaction(number, &fallback, nullptr);
+    raise(number);
 }
 
 void InstallAbortReport() {
@@ -170,9 +265,8 @@ void InstallAbortReport() {
 }
 #endif
 
-void* WriteThunk(const ImportRecord& record) {
-    if ((g_thunks + 1) * ThunkBytes > ThunkAreaBytes) throw std::runtime_error("call trace: thunk area exhausted");
-    const std::size_t offset = g_thunks * ThunkBytes;
+void* WriteThunk(const ImportRecord& record, const std::size_t index) {
+    const std::size_t offset = index * ThunkBytes;
     const std::uint8_t prefix[] = {0x49, 0xbb};
     const std::uint8_t jump[] = {0xff, 0x25, 0, 0, 0, 0};
     const auto recordAddress = reinterpret_cast<std::uint64_t>(&record);
@@ -187,7 +281,6 @@ void* WriteThunk(const ImportRecord& record) {
 #else
     __builtin___clear_cache(reinterpret_cast<char*>(g_executable + offset), reinterpret_cast<char*>(g_executable + offset + ThunkBytes));
 #endif
-    ++g_thunks;
     return g_executable + offset;
 }
 
@@ -200,7 +293,7 @@ extern "C" {
 void APS5_VABI CallTraceRecord_nid_no_patch(const void* record, std::uint64_t returnAddress) {
     static_cast<const ImportRecord*>(record)->calls.fetch_add(1, std::memory_order_relaxed);
     const std::uint64_t sequence = g_sequence.fetch_add(1, std::memory_order_relaxed) + 1;
-    RingSlot& slot = g_ring[sequence % RingCapacity];
+    RingSlot& slot = g_ring.load(std::memory_order_relaxed)[sequence % RingCapacity];
     slot.sequence.store(0, std::memory_order_release);
     slot.thread.store(CurrentThread(), std::memory_order_relaxed);
     slot.returnAddress.store(returnAddress, std::memory_order_relaxed);
@@ -211,27 +304,38 @@ void APS5_VABI CallTraceRecord_nid_no_patch(const void* record, std::uint64_t re
 void* TraceImport_nid_no_patch(void* target, const char* name, const char* library) {
     if (target == nullptr || name == nullptr || library == nullptr || !Selected(library)) return target;
     std::lock_guard lock(g_mutex);
-    if (g_ring == nullptr) {
+    if (g_ring.load(std::memory_order_relaxed) == nullptr) {
         MapThunkArea();
-        g_ring = std::make_unique<RingSlot[]>(RingCapacity);
+        g_records.store(new ImportRecord[RecordCapacity], std::memory_order_release);
+        g_ring.store(new RingSlot[RingCapacity], std::memory_order_release);
 #ifdef __linux__
         InstallAbortReport();
 #endif
     }
+#ifdef __linux__
+    SnapshotModules();
+#endif
     if (const auto existing = g_thunkByTarget.find(target); existing != g_thunkByTarget.end()) return existing->second;
-    g_records.emplace_back(target, name, library);
-    void* thunk = WriteThunk(g_records.back());
+    const std::size_t index = g_recordCount.load(std::memory_order_relaxed);
+    if (index == RecordCapacity) throw std::runtime_error("call trace: thunk area exhausted");
+    ImportRecord& record = g_records.load(std::memory_order_relaxed)[index];
+    record.target = target;
+    record.name = name;
+    record.library = library;
+    void* thunk = WriteThunk(record, index);
     g_thunkByTarget.emplace(target, thunk);
+    g_recordCount.store(index + 1, std::memory_order_release);
     return thunk;
 }
 
 std::size_t CopyCallTrace_nid_no_patch(CallTraceEntry* entries, std::size_t capacity) {
-    if (entries == nullptr || capacity == 0 || g_ring == nullptr) return 0;
+    const RingSlot* ring = g_ring.load(std::memory_order_acquire);
+    if (entries == nullptr || capacity == 0 || ring == nullptr) return 0;
     const std::uint64_t last = g_sequence.load(std::memory_order_acquire);
     const std::uint64_t span = std::min<std::uint64_t>({last, capacity, RingCapacity});
     std::size_t count = 0;
     for (std::uint64_t sequence = last - span + 1; sequence <= last; ++sequence) {
-        const RingSlot& slot = g_ring[sequence % RingCapacity];
+        const RingSlot& slot = ring[sequence % RingCapacity];
         if (slot.sequence.load(std::memory_order_acquire) != sequence) continue;
         const auto* record = slot.record.load(std::memory_order_relaxed);
         const CallTraceEntry entry{sequence, slot.thread.load(std::memory_order_relaxed), slot.returnAddress.load(std::memory_order_relaxed), record->name.c_str(), record->library.c_str()};
@@ -244,10 +348,11 @@ std::size_t CopyCallTrace_nid_no_patch(CallTraceEntry* entries, std::size_t capa
 std::size_t CopyCallCounts_nid_no_patch(CallTraceCount* entries, std::size_t capacity, std::uint64_t* total) {
     if (total != nullptr) *total = g_sequence.load(std::memory_order_acquire);
     if (entries == nullptr || capacity == 0) return 0;
-    std::unique_lock lock(g_mutex, std::try_to_lock);
-    if (!lock.owns_lock()) return 0;
+    const std::size_t recorded = g_recordCount.load(std::memory_order_acquire);
+    const ImportRecord* records = g_records.load(std::memory_order_acquire);
     std::size_t count = 0;
-    for (const auto& record : g_records) {
+    for (std::size_t index = 0; index < recorded; ++index) {
+        const ImportRecord& record = records[index];
         const std::uint64_t calls = record.calls.load(std::memory_order_relaxed);
         if (calls == 0 || (count == capacity && calls <= entries[count - 1].calls)) continue;
         std::size_t position = count < capacity ? count++ : count - 1;

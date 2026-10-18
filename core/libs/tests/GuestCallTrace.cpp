@@ -6,6 +6,7 @@
 #include <dlfcn.h>
 #include <unistd.h>
 #endif
+#include <atomic>
 #include <csignal>
 #include <cstdint>
 #include <cstdio>
@@ -95,6 +96,14 @@ int main(int argc, char** argv) {
         Require(first(1, 2, 3, 4, 5, 6, 7, 8) == 204 && second(7).words[3] == 10);
 #ifdef _WIN32
         _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
+#else
+        std::atomic<bool> locked{false};
+        std::thread([&locked] {
+            flockfile(stderr);
+            locked.store(true);
+            for (;;) pause();
+        }).detach();
+        while (!locked.load()) std::this_thread::yield();
 #endif
         std::abort();
     }
