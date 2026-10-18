@@ -118,8 +118,12 @@ public:
     void MarkRefreshedPerUse() { perUseCopy = PerUseCopy::RemadePerUse; }
     bool Released() const { return released.load(std::memory_order_acquire); }
     void MarkReleased() { released.store(true, std::memory_order_release); }
+    std::uint32_t HeapHolds() const { return heapHolds.load(std::memory_order_relaxed); }
+    void AddHeapHold() { heapHolds.fetch_add(1, std::memory_order_relaxed); }
+    void DropHeapHold() { heapHolds.fetch_sub(1, std::memory_order_relaxed); }
 
 private:
+    std::atomic<std::uint32_t> heapHolds{0};
     void release() noexcept;
     bool refreshBlockCopy();
     bool refreshSrgbExpand();
@@ -361,6 +365,7 @@ public:
     // was still current (nothing uploaded).
     // Keeps the image current with guest memory (see GuestMemory::CollectWrites).
     bool Refresh();
+    inline static std::atomic<std::uint64_t> epochRefreshes{0};
     static std::uint64_t SinglePassMoves();
     static std::uint64_t RefreshesProved();
     static std::uint64_t UntrackedCompares();
@@ -370,6 +375,9 @@ public:
     VkDeviceSize AllocationBytes() const { return memoryBytes; }
 
 private:
+    std::atomic<std::uint64_t> provedEpoch{0};
+    std::atomic<std::uint64_t> provedProof{0};
+    std::atomic<std::uint64_t> provedPending{0};
     StorageTexture(const Context& context, TextureDetiler& detiler, const GuestTextureResource& descriptor, std::uint32_t mipLevel);
     // The regions of every array layer, or of the tracked layers `layers` selects.
     std::vector<VkBufferImageCopy> CopyRegions(const std::vector<bool>* layers = nullptr) const;
