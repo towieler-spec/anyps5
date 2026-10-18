@@ -2180,6 +2180,26 @@ void OneDimensionalColorTests() {
     Require(line.color.extent.width == 64u && line.color.extent.height == 1u && line.color.address == reinterpret_cast<std::uintptr_t>(colorMemory.data()) && line.color.depth == 1u, "a 1D color target did not decode as one row");
 }
 
+void multisampledSingleClearTests() {
+    static constexpr std::array<std::uint32_t, 22> kernel{0xbe800303u, 0xbe830382u, 0xf40c0401u, 0xfa000000u, 0xd7460000u, 0x04010609u, 0xd7460001u, 0x0405060au, 0x7e060208u, 0x7e0c020bu, 0x7e0e0280u, 0xd5690004u, 0x02000100u, 0x7e000205u, 0xd5690005u, 0x02000901u, 0xd7000001u, 0x02000c80u, 0xbf8cc07fu, 0xf0201f38u, 0x00040004u, 0xbf810000u};
+    const std::array<std::uint32_t, 9> userData{0u, 0u, 0x0f7f0008u, 8u, 8u, 0xff00ffccu, 0u, 0u, 0u};
+    const std::array<std::uint32_t, 3> group{8, 8, 1};
+    const auto match = [&](std::span<const std::uint32_t> code, std::span<const std::uint32_t> words, const std::array<std::uint32_t, 3>& threads) {
+        return AgcDriver::Graphics::MatchMultisampledSingleClear(code, words, threads);
+    };
+    const auto clear = match(kernel, userData, group);
+    Require(clear.has_value() && clear->descriptor == 0x20f7f0008ull && clear->color == std::array<std::uint32_t, 4>{0xff00ffccu, 0u, 0u, 0u}, "RADV's multisampled comp-to-single clear was not recognized");
+    Require(!match(kernel, userData, {64, 1, 1}), "the comp-to-single clear matched with another group size");
+    Require(!match(kernel, std::span(userData).first(8), group), "the comp-to-single clear matched without its clear color");
+    auto unsized = userData;
+    unsized[3] = 0;
+    Require(!match(kernel, unsized, group), "a comp-to-single clear with no block size was recognized");
+    auto other = kernel;
+    other[17] ^= 1u;
+    Require(!match(other, userData, group), "a different kernel was taken for RADV's comp-to-single clear");
+    Require(!match(std::span(kernel).first(21), userData, group), "a truncated kernel was taken for RADV's comp-to-single clear");
+}
+
 void htileDepthClearTests() {
     static constexpr std::array<std::uint32_t, 17> kernel{0xd7460000u, 0x04010c06u, 0x34000084u, 0xdc388000u, 0x04020000u, 0xbf8c3f70u, 0xd7710008u, 0x00120805u, 0xd7710009u, 0x00120a05u, 0xd771000au, 0x00120c05u, 0xd771000bu, 0x00120e05u, 0xdc788000u, 0x00020800u, 0xbf810000u};
     const std::array<std::uint32_t, 3> wave{64, 1, 1};
@@ -3374,6 +3394,41 @@ void multisampleTests() {
     Require(MultisampledFillClearColor(srgb, 0, clear) && clear.float32[0] == 0.0f && clear.float32[3] == 0.0f, "an sRGB fill of 0 did not clear to 0");
     Require(MultisampledFillClearColor(srgb, 0x80ffffffu, clear) && clear.float32[2] == 1.0f && clear.float32[3] == 128.0f / 255.0f, "an sRGB fill of white with linear alpha 0x80 did not clear to it");
     Require(!MultisampledFillClearColor(srgb, 0x00000080u, clear), "an sRGB fill whose color decodes inexactly cleared");
+
+    using AgcDriver::Graphics::MultisampledDccClear;
+    auto single = srgb;
+    single.format = VK_FORMAT_R8G8B8A8_UNORM;
+    single.tileMode = ColorTileMode::RenderTarget;
+    single.extent = {581, 729};
+    single.address = single.surfaceAddress = 0x40010000;
+    single.dccAddress = 0x50010000;
+    single.dccPipeAligned = true;
+    const std::vector<std::byte> singleKeys(AgcDriver::Graphics::MultisampledDccBytes(single), std::byte{0x10});
+    expectFailure([&] { MultisampledDccClear(single, singleKeys, {}); }, "comp-to-single keys without a recorded clear color");
+    AgcDriver::Graphics::GuestTextureResource cleared{};
+    cleared.baseAddress = single.surfaceAddress;
+    cleared.width = 581;
+    cleared.height = 729;
+    cleared.samples = 4;
+    AgcDriver::Graphics::NoteMultisampledSingleClear(cleared, {0xff00ffccu, 0u, 0u, 0u});
+    clear = MultisampledDccClear(single, singleKeys, {});
+    Require(clear.float32[0] == 204.0f / 255.0f && clear.float32[1] == 1.0f && clear.float32[2] == 0.0f && clear.float32[3] == 1.0f, "comp-to-single keys did not clear to the recorded RGBA8 color");
+    auto resized = single;
+    resized.extent = {580, 729};
+    const std::vector<std::byte> resizedKeys(AgcDriver::Graphics::MultisampledDccBytes(resized), std::byte{0x10});
+    expectFailure([&] { MultisampledDccClear(resized, resizedKeys, {}); }, "comp-to-single keys without a recorded clear color");
+    auto wide = halfFloat;
+    wide.surfaceAddress = 0x40000000;
+    wide.dccAddress = 0x50000000;
+    wide.dccPipeAligned = true;
+    AgcDriver::Graphics::GuestTextureResource wideCleared{};
+    wideCleared.baseAddress = wide.surfaceAddress;
+    wideCleared.width = wide.extent.width;
+    wideCleared.height = wide.extent.height;
+    wideCleared.samples = wide.samples;
+    AgcDriver::Graphics::NoteMultisampledSingleClear(wideCleared, {0x3c003c00u, 0x3c003c00u, 0u, 0u});
+    const std::vector<std::byte> wideKeys(AgcDriver::Graphics::MultisampledDccBytes(wide), std::byte{0x10});
+    expectFailure([&] { MultisampledDccClear(wide, wideKeys, {}); }, "wider than 32 bits");
 
     using AgcDriver::Graphics::TakeMultisampledClear;
     halfFloat.clearWords = {0x3c003c00u, 0x3c003c00u};
@@ -8846,6 +8901,7 @@ int main(int argc, char** argv) {
         DepthStencilTests();
         OneDimensionalColorTests();
         htileDepthClearTests();
+        multisampledSingleClearTests();
         memoryValueFillTests();
         ZExportTests();
         unorm10_11_11TargetTests();

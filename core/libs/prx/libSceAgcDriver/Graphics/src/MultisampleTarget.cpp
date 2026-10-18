@@ -590,6 +590,75 @@ std::size_t MultisampledDccBytes(const ColorTarget& target) {
     return static_cast<std::size_t>(((target.extent.width + width - 1) / width) * ((target.extent.height + height - 1) / height) * 4096u);
 }
 
+namespace {
+
+struct RecordedSingleClear {
+    std::uint64_t surface = 0;
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    std::uint32_t samples = 0;
+    std::array<std::uint32_t, 4> color{};
+};
+
+std::mutex& singleClearsMutex() {
+    static std::mutex mutex;
+    return mutex;
+}
+
+std::vector<RecordedSingleClear>& singleClears() {
+    static std::vector<RecordedSingleClear> list;
+    return list;
+}
+
+std::optional<std::array<std::uint32_t, 4>> recordedSingleClear(const ColorTarget& target) {
+    std::lock_guard lock(singleClearsMutex());
+    for (const auto& clear : singleClears()) {
+        if (clear.surface == target.surfaceAddress && clear.width == target.extent.width && clear.height == target.extent.height && clear.samples == target.samples) return clear.color;
+    }
+    return std::nullopt;
+}
+
+VkClearColorValue singleClearColor(const ColorTarget& target) {
+    const auto color = recordedSingleClear(target);
+    Require(color.has_value(), "multisampled DCC comp-to-single keys without a recorded clear color are not implemented");
+    const auto elementBytes = static_cast<std::size_t>(target.elementBytes);
+    Require(elementBytes == 1 || elementBytes == 2 || elementBytes == 4, "multisampled DCC comp-to-single clears of texels wider than 32 bits are not implemented");
+    std::array<std::uint32_t, 4> pattern{};
+    for (std::size_t offset = 0; offset < sizeof(pattern); offset += elementBytes) std::memcpy(reinterpret_cast<std::byte*>(pattern.data()) + offset, color->data(), elementBytes);
+    VkClearColorValue clear{};
+    Require(ClearColorForTexel(target.format, target.elementBytes, pattern, clear), "multisampled DCC comp-to-single clear has no exact host value");
+    return clear;
+}
+
+}
+
+std::optional<MultisampledSingleClear> MatchMultisampledSingleClear(std::span<const std::uint32_t> code, std::span<const std::uint32_t> userData, const std::array<std::uint32_t, 3>& numThreads) {
+    static constexpr std::array<std::uint32_t, 22> kernel{0xbe800303u, 0xbe830382u, 0xf40c0401u, 0xfa000000u, 0xd7460000u, 0x04010609u, 0xd7460001u, 0x0405060au, 0x7e060208u, 0x7e0c020bu, 0x7e0e0280u, 0xd5690004u, 0x02000100u, 0x7e000205u, 0xd5690005u, 0x02000901u, 0xd7000001u, 0x02000c80u, 0xbf8cc07fu, 0xf0201f38u, 0x00040004u, 0xbf810000u};
+    if (userData.size() < 9 || numThreads != std::array<std::uint32_t, 3>{8u, 8u, 1u}) return std::nullopt;
+    if (code.size() < kernel.size() || !std::equal(kernel.begin(), kernel.end(), code.begin())) return std::nullopt;
+    if (userData[3] == 0 || userData[4] == 0) return std::nullopt;
+    return MultisampledSingleClear{userData[2] | (std::uint64_t{2} << 32u), {userData[5], userData[6], userData[7], userData[8]}};
+}
+
+void NoteMultisampledSingleClear(const GuestTextureResource& resource, const std::array<std::uint32_t, 4>& color) {
+    std::lock_guard lock(singleClearsMutex());
+    auto& list = singleClears();
+    std::erase_if(list, [&](const RecordedSingleClear& clear) { return clear.surface == resource.baseAddress; });
+    list.push_back({resource.baseAddress, resource.width, resource.height, resource.samples, color});
+}
+
+bool TakeMultisampledSingleClear(std::span<const std::uint32_t> code, std::span<const std::uint32_t> userData, const std::array<std::uint32_t, 3>& numThreads) {
+    const auto clear = MatchMultisampledSingleClear(code, userData, numThreads);
+    if (!clear) return false;
+    std::array<std::uint32_t, 8> words{};
+    if (!GuestMemory::Accessible(reinterpret_cast<const void*>(clear->descriptor), sizeof(words))) return false;
+    GuestMemory::Read(clear->descriptor, std::as_writable_bytes(std::span(words)));
+    const auto resource = DecodeTextureResource(words);
+    if (resource.samples < 2) return false;
+    NoteMultisampledSingleClear(resource, clear->color);
+    return true;
+}
+
 VkClearColorValue MultisampledDccClear(const ColorTarget& target, std::span<const std::byte> dcc, std::span<const std::byte> cmask) {
     Require(target.dccAddress != 0 && (target.dccControl & 0x3ff80u) == 0 && (target.pipeBankXor & ~0xcf00u) == 0, "multisampled DCC address, color transform, lossy mode or XOR is not implemented");
     Require(dcc.size() == MultisampledDccBytes(target), "multisampled DCC metadata snapshot size mismatch");
@@ -600,6 +669,7 @@ VkClearColorValue MultisampledDccClear(const ColorTarget& target, std::span<cons
         const auto expanded = target.samples == 2 ? 0xddu : target.samples == 4 ? 0xeeu : 0xffu;
         Require(std::ranges::all_of(cmask, [&](std::byte key) { return key == cmask.front(); }) && (code == 0xccu || code == expanded), "multisampled DCC CMASK compression or register clear is not implemented");
     }
+    if (dcc.front() == std::byte{0x10}) return singleClearColor(target);
     DccKeys keys;
     switch (std::to_integer<std::uint32_t>(dcc.front())) {
         case 0x00u: keys = DccKeys::Clear0000; break;
