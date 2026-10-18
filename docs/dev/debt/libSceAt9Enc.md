@@ -2,7 +2,7 @@
 
 ### Not implemented
 
-- [libSceAt9Enc](../../../core/libs/prx/libSceSysmodule/ModuleTable.hpp) (PS5 system library; name suggests ATRAC9 encoder but unconfirmed; sysmodule id `0x000000d1`) is not implemented in AnyPS5. Only its entry in the sysmodule table exists; there is no `core/libs/prx/libSceAt9Enc` implementation and no host `.prx` is shipped. Titles that link it directly (observed with PPSA03332) fail to load with `libSceAt9Enc.prx: cannot open shared object file`.
+- [libSceAt9Enc](../../../core/libs/prx/libSceAt9Enc/Export.cpp) (PS5 system library; name suggests ATRAC9 encoder but unconfirmed; sysmodule id `0x000000d1`) is not implemented in AnyPS5. Only its entry in the sysmodule table exists; there is no `core/libs/prx/libSceAt9Enc` implementation and no host `.prx` is shipped. Titles that link it directly (observed with PPSA03332) fail to load with `libSceAt9Enc.prx: cannot open shared object file`.
 
 ### Related unimplemented system libraries
 
