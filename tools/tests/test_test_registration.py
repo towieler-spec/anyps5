@@ -236,5 +236,42 @@ class RegistrationTests(unittest.TestCase):
                     check_test_registration.built(build)
                 run.assert_called_once()
 
+class ScriptRegistrationTests(unittest.TestCase):
+    def unrun(self, files):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            check_test_registration.subprocess.run(["git", "init", "-q", str(root)], check=True)
+            for name, content in files.items():
+                (root / name).parent.mkdir(parents=True, exist_ok=True)
+                (root / name).write_text(content, encoding="utf-8")
+            return check_test_registration.unrun_scripts(root)[1]
+
+    def test_script_registered_by_a_nested_add_test_runs(self):
+        self.assertEqual(self.unrun({
+            "core/relinker/CMakeLists.txt": "if(WIN32)\n    add_test(NAME a COMMAND ${Python3_EXECUTABLE}\n        ${CMAKE_CURRENT_SOURCE_DIR}/relinker/tests/test_a.py)\nendif()\n",
+            "core/relinker/relinker/tests/test_a.py": ""}), [])
+
+    def test_unregistered_script_is_reported(self):
+        self.assertEqual(self.unrun({
+            "CMakeLists.txt": "add_test(NAME a COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/tests/test_a.py)\n",
+            "tools/tests/test_a.py": "", "tools/tests/test_b.py": "", "tools/tests/helper.py": ""}), ["tools/tests/test_b.py"])
+
+    def test_commented_add_test_does_not_run_a_script(self):
+        self.assertEqual(self.unrun({
+            "CMakeLists.txt": "#add_test(NAME a COMMAND python ${CMAKE_CURRENT_SOURCE_DIR}/test_a.py)\n#[[\nadd_test(NAME a COMMAND python test_a.py)\n]]\n",
+            "test_a.py": ""}), ["test_a.py"])
+
+    def test_registration_names_its_directory(self):
+        self.assertEqual(self.unrun({
+            "CMakeLists.txt": "add_test(NAME a COMMAND python ${CMAKE_CURRENT_SOURCE_DIR}/a/tests/test_a.py)\n",
+            "a/tests/test_a.py": "", "b/tests/test_a.py": ""}), ["b/tests/test_a.py"])
+
+    def test_workflow_run_counts_and_a_paths_filter_does_not(self):
+        self.assertEqual(self.unrun({
+            ".github/workflows/pages.yml": "jobs:\n  web:\n    steps:\n      - run: python3 tools/test_web.py --build build-wasm\n",
+            ".github/workflows/web.yml": "on:\n  pull_request:\n    paths:\n      - tools/test_paths.py\n",
+            "tools/test_web.py": "", "tools/test_paths.py": ""}), ["tools/test_paths.py"])
+
+
 if __name__ == "__main__":
     unittest.main()
