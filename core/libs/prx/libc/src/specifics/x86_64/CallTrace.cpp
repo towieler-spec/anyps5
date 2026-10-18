@@ -1,5 +1,14 @@
+#if defined(_WIN32) || defined(__linux__)
 #ifdef _WIN32
 #include <windows.h>
+#else
+#include <cerrno>
+#include <csignal>
+#include <cstdio>
+#include <dlfcn.h>
+#include <sys/mman.h>
+#include <unistd.h>
+#endif
 #include "prx/libc/include/CallTrace.hpp"
 #include "prx/libc/include/general/AsmMacros.hpp"
 #include "prx/libc/include/general/VabiMacros.hpp"
@@ -62,6 +71,15 @@ bool Selected(std::string_view library) {
     return false;
 }
 
+std::uint64_t CurrentThread() {
+#ifdef _WIN32
+    return GetCurrentThreadId();
+#else
+    return static_cast<std::uint64_t>(gettid());
+#endif
+}
+
+#ifdef _WIN32
 void MapThunkArea() {
     const HANDLE section = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_EXECUTE_READWRITE, 0, static_cast<DWORD>(ThunkAreaBytes), nullptr);
     if (section == nullptr) throw std::system_error(static_cast<int>(GetLastError()), std::system_category(), "call trace: CreateFileMappingW");
@@ -71,6 +89,86 @@ void MapThunkArea() {
     CloseHandle(section);
     if (g_writable == nullptr || g_executable == nullptr) throw std::system_error(static_cast<int>(code), std::system_category(), "call trace: MapViewOfFile");
 }
+#else
+void MapThunkArea() {
+    const int file = memfd_create("aps5-call-trace", MFD_CLOEXEC);
+    if (file < 0) throw std::system_error(errno, std::generic_category(), "call trace: memfd_create");
+    void* writable = MAP_FAILED;
+    void* executable = MAP_FAILED;
+    if (ftruncate(file, ThunkAreaBytes) == 0) {
+        writable = mmap(nullptr, ThunkAreaBytes, PROT_READ | PROT_WRITE, MAP_SHARED, file, 0);
+        if (writable != MAP_FAILED) executable = mmap(nullptr, ThunkAreaBytes, PROT_READ | PROT_EXEC, MAP_SHARED, file, 0);
+    }
+    const int code = errno;
+    close(file);
+    if (writable == MAP_FAILED || executable == MAP_FAILED) {
+        if (writable != MAP_FAILED) munmap(writable, ThunkAreaBytes);
+        throw std::system_error(code, std::generic_category(), "call trace: mmap");
+    }
+    g_writable = static_cast<std::uint8_t*>(writable);
+    g_executable = static_cast<std::uint8_t*>(executable);
+}
+
+struct sigaction g_previousAbort{};
+
+void DescribeAddress(std::uint64_t address, char* buffer, std::size_t size) {
+    Dl_info info{};
+    if (dladdr(reinterpret_cast<const void*>(address), &info) != 0 && info.dli_fname != nullptr && info.dli_fbase != nullptr) {
+        const char* slash = std::strrchr(info.dli_fname, '/');
+        const char* name = slash == nullptr ? info.dli_fname : slash + 1;
+        std::snprintf(buffer, size, "0x%016llx %s+0x%llx", static_cast<unsigned long long>(address), *name == '\0' ? "?" : name,
+            static_cast<unsigned long long>(address - reinterpret_cast<std::uint64_t>(info.dli_fbase)));
+        return;
+    }
+    std::snprintf(buffer, size, "0x%016llx", static_cast<unsigned long long>(address));
+}
+
+void ReportCallTrace() {
+    static CallTraceEntry entries[64];
+    const std::size_t count = CopyCallTrace_nid_no_patch(entries, std::size(entries));
+    if (count == 0) return;
+    char line[4096 + 64];
+    std::fprintf(stderr, "  last traced system library calls (APS5_TRACE_CALLS):\n");
+    for (std::size_t index = 0; index < count; ++index) {
+        DescribeAddress(entries[index].returnAddress, line, sizeof(line));
+        std::fprintf(stderr, "    #%llu thread %llu %s %s from %s\n", static_cast<unsigned long long>(entries[index].sequence),
+            static_cast<unsigned long long>(entries[index].thread), entries[index].library, entries[index].name, line);
+    }
+    static CallTraceCount counts[32];
+    std::uint64_t total = 0;
+    const std::size_t counted = CopyCallCounts_nid_no_patch(counts, std::size(counts), &total);
+    if (counted == 0) return;
+    std::fprintf(stderr, "  most called traced imports (%llu calls in total):\n", static_cast<unsigned long long>(total));
+    for (std::size_t index = 0; index < counted; ++index) {
+        std::fprintf(stderr, "    %12llu %s %s\n", static_cast<unsigned long long>(counts[index].calls), counts[index].library, counts[index].name);
+    }
+}
+
+void ReportOnAbort(int number, siginfo_t* info, void* context) {
+    std::fprintf(stderr, "[libc] SIGABRT\n");
+    ReportCallTrace();
+    std::fflush(stderr);
+    if ((g_previousAbort.sa_flags & SA_SIGINFO) != 0) {
+        if (g_previousAbort.sa_sigaction != nullptr) g_previousAbort.sa_sigaction(number, info, context);
+        return;
+    }
+    if (g_previousAbort.sa_handler == SIG_IGN) return;
+    if (g_previousAbort.sa_handler != SIG_DFL) {
+        g_previousAbort.sa_handler(number);
+        return;
+    }
+    std::signal(number, SIG_DFL);
+    std::raise(number);
+}
+
+void InstallAbortReport() {
+    struct sigaction action{};
+    action.sa_sigaction = ReportOnAbort;
+    action.sa_flags = SA_SIGINFO;
+    sigemptyset(&action.sa_mask);
+    if (sigaction(SIGABRT, &action, &g_previousAbort) != 0) throw std::system_error(errno, std::generic_category(), "call trace: sigaction");
+}
+#endif
 
 void* WriteThunk(const ImportRecord& record) {
     if ((g_thunks + 1) * ThunkBytes > ThunkAreaBytes) throw std::runtime_error("call trace: thunk area exhausted");
@@ -84,7 +182,11 @@ void* WriteThunk(const ImportRecord& record) {
     std::memcpy(thunk + 2, &recordAddress, sizeof(recordAddress));
     std::memcpy(thunk + 10, jump, sizeof(jump));
     std::memcpy(thunk + 16, &handler, sizeof(handler));
+#ifdef _WIN32
     FlushInstructionCache(GetCurrentProcess(), g_executable + offset, ThunkBytes);
+#else
+    __builtin___clear_cache(reinterpret_cast<char*>(g_executable + offset), reinterpret_cast<char*>(g_executable + offset + ThunkBytes));
+#endif
     ++g_thunks;
     return g_executable + offset;
 }
@@ -100,7 +202,7 @@ void APS5_VABI CallTraceRecord_nid_no_patch(const void* record, std::uint64_t re
     const std::uint64_t sequence = g_sequence.fetch_add(1, std::memory_order_relaxed) + 1;
     RingSlot& slot = g_ring[sequence % RingCapacity];
     slot.sequence.store(0, std::memory_order_release);
-    slot.thread.store(GetCurrentThreadId(), std::memory_order_relaxed);
+    slot.thread.store(CurrentThread(), std::memory_order_relaxed);
     slot.returnAddress.store(returnAddress, std::memory_order_relaxed);
     slot.record.store(static_cast<const ImportRecord*>(record), std::memory_order_relaxed);
     slot.sequence.store(sequence, std::memory_order_release);
@@ -112,6 +214,9 @@ void* TraceImport_nid_no_patch(void* target, const char* name, const char* libra
     if (g_ring == nullptr) {
         MapThunkArea();
         g_ring = std::make_unique<RingSlot[]>(RingCapacity);
+#ifdef __linux__
+        InstallAbortReport();
+#endif
     }
     if (const auto existing = g_thunkByTarget.find(target); existing != g_thunkByTarget.end()) return existing->second;
     g_records.emplace_back(target, name, library);
@@ -198,5 +303,6 @@ asm(".text\n"
     "    pop %rdx\n"
     "    pop %rsi\n"
     "    pop %rdi\n"
-    "    jmp *(%r11)\n");
+    "    jmp *(%r11)\n"
+    APS5_ASM_FUNCTION_END("CallTraceEnter_nid_no_patch"));
 #endif
