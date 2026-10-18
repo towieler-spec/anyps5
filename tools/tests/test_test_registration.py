@@ -272,6 +272,18 @@ class ScriptRegistrationTests(unittest.TestCase):
             ".github/workflows/web.yml": "on:\n  pull_request:\n    paths:\n      - tools/test_paths.py\n",
             "tools/test_web.py": "", "tools/test_paths.py": ""}), ["tools/test_paths.py"])
 
+    def test_commented_workflow_line_does_not_run_a_script(self):
+        self.assertEqual(self.unrun({
+            ".github/workflows/ci.yml": "# python3 tools/tests/test_f.py\njobs:\n  t:\n    steps:\n      # python3 tools/tests/test_a.py\n"
+                                        "      - run: |\n          #python3 tools/tests/test_b.py\n"
+                                        "          \t# python3 tools/tests/test_c.py\n"
+                                        "          echo done\t# python3 tools/tests/test_d.py\n"
+                                        "          python3 tools/tests/test_e.py\n",
+            "tools/tests/test_a.py": "", "tools/tests/test_b.py": "", "tools/tests/test_c.py": "",
+            "tools/tests/test_d.py": "", "tools/tests/test_e.py": "", "tools/tests/test_f.py": ""}),
+            ["tools/tests/test_a.py", "tools/tests/test_b.py", "tools/tests/test_c.py", "tools/tests/test_d.py",
+             "tools/tests/test_f.py"])
+
 
 if __name__ == "__main__":
     unittest.main()

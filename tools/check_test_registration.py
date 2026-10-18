@@ -141,7 +141,9 @@ def run_scripts(root, files):
                     run.update(argument.rpartition("}")[2].lstrip("/") for argument in arguments)
         elif name.startswith(".github/workflows/") and name.endswith((".yml", ".yaml")):
             for line in (Path(root) / name).read_text(encoding="utf-8", errors="replace").splitlines():
-                line = line.split(" #")[0]
+                if line.lstrip().startswith("#"):
+                    continue
+                line = re.split(r"\s#", line)[0]
                 if "python" in line:
                     run.update(token[2:] if token.startswith("./") else token for token in SCRIPT.findall(line))
     return {name for name in run if SCRIPT.fullmatch(name)}
