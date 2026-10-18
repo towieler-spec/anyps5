@@ -46,7 +46,8 @@ constexpr std::uintptr_t GuestArenaOffset = 0x0000100000000000ull;
 #else
 constexpr std::uintptr_t GuestArenaOffset = 0;
 #endif
-constexpr std::uintptr_t ArenaStart = 0x0000000200000000ull + GuestArenaOffset;
+constexpr std::uintptr_t DefaultAllocationStart = 0x0000000200000000ull + GuestArenaOffset;
+constexpr std::uintptr_t ArenaStart = GuestArenaOffset == 0 ? 0x10000ull : DefaultAllocationStart;
 constexpr std::uintptr_t SystemReservedStart = 0x00000007FFFFC000ull + GuestArenaOffset;
 constexpr std::uintptr_t SystemReservedEnd = 0x0000001000000000ull + GuestArenaOffset;
 constexpr std::uintptr_t ApplicationAreaEnd = 0x000000FC00000000ull + GuestArenaOffset;
@@ -86,7 +87,7 @@ public:
         RequireAllocatable(alignment);
         std::lock_guard lock(_lock);
         auto candidate = hint < _end ? FindAtOrAbove(hint, bytes, alignment) : 0;
-        if (candidate == 0 && hint > _base) candidate = FindAtOrAbove(_base, bytes, alignment);
+        if (candidate == 0 && hint > _base) candidate = FindAtOrAbove(hint < DefaultAllocationStart ? _base : DefaultAllocationStart, bytes, alignment);
         return Claim(candidate, bytes);
     }
 
@@ -263,6 +264,10 @@ private:
             const int failed = ReserveNoReplace(cursor, end - cursor);
             if (failed == 0) continue;
             if (failed != EEXIST) {
+                if (cursor < DefaultAllocationStart && (failed == EACCES || failed == EPERM)) {
+                    occupied.emplace_back(cursor, end);
+                    continue;
+                }
                 char message[128];
                 std::snprintf(message, sizeof(message), "guest arena: cannot reserve 0x%llx+0x%llx",
                     static_cast<unsigned long long>(cursor), static_cast<unsigned long long>(end - cursor));
@@ -299,7 +304,7 @@ private:
     }
 
     std::uintptr_t FindAtOrAbove(std::uintptr_t hint, std::size_t bytes, std::size_t alignment) const {
-        std::uintptr_t candidate = alignUp(std::max(_base, hint), alignment);
+        std::uintptr_t candidate = alignUp(hint == 0 ? DefaultAllocationStart : std::max(_base, hint), alignment);
         auto it = _used.upper_bound(candidate);
         if (it != _used.begin() && std::prev(it)->second > candidate) --it;
         for (; it != _used.end(); ++it) {
