@@ -359,11 +359,11 @@ int APS5_VABI sceRudpPollControl(int pollId, int op, int ctxId, uint16_t events)
     auto& entries = poll->second.entries;
     const auto entry = entries.find(ctxId);
     if (op == RUDP_POLL_OP_ADD) {
-        if (entry != entries.end()) {
-            return RUDP_ERROR_INVALID_CONTEXT_ID;
-        }
         if (entries.size() >= poll->second.capacity) {
             return RUDP_ERROR_TOO_MANY_CONTEXTS;
+        }
+        if (entry != entries.end()) {
+            return RUDP_ERROR_INVALID_CONTEXT_ID;
         }
         entries.emplace(ctxId, events);
         return 0;
@@ -403,6 +403,9 @@ int APS5_VABI sceRudpPollDestroy(int pollId) {
     std::lock_guard<std::mutex> lk(g_mutex);
     if (!g_inited) {
         return RUDP_ERROR_NOT_INITIALIZED;
+    }
+    if (pollId < 0) {
+        return RUDP_ERROR_INVALID_ARGUMENT;
     }
     if (g_polls.erase(pollId) == 0) {
         return RUDP_ERROR_INVALID_POLL_ID;

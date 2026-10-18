@@ -55,7 +55,7 @@ int main() {
     Require(sceRudpPollCreate(0) == invalidArgument);
     const int poll = sceRudpPollCreate(1);
     Require(poll > 0);
-    const int other = sceRudpPollCreate(1);
+    const int other = sceRudpPollCreate(2);
     Require(other > 0 && other != poll);
 
     int first = -1;
@@ -73,9 +73,10 @@ int main() {
     Require(sceRudpPollControl(poll, remove, first, read) == invalidContext);
 
     Require(sceRudpPollControl(poll, add, first, read) == 0);
-    Require(sceRudpPollControl(poll, add, first, read) == invalidContext);
+    Require(sceRudpPollControl(poll, add, first, read) == tooManyContexts);
     Require(sceRudpPollControl(poll, add, second, read) == tooManyContexts);
     Require(sceRudpPollControl(other, add, first, read) == 0);
+    Require(sceRudpPollControl(other, add, first, read) == invalidContext);
     Require(sceRudpPollControl(poll, modify, first, read | write) == 0);
     Require(sceRudpPollControl(poll, remove, first, 0) == 0);
     Require(sceRudpPollControl(poll, remove, first, 0) == invalidContext);
@@ -106,6 +107,7 @@ int main() {
     destroyedWaiter.join();
     Require(destroyedResult == invalidPoll);
     Require(sceRudpPollDestroy(poll) == invalidPoll);
+    Require(sceRudpPollDestroy(-1) == invalidArgument);
     Require(sceRudpPollControl(poll, add, third, read) == invalidPoll);
 
     int endedResult = 0;
