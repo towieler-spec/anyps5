@@ -1,6 +1,7 @@
 #include "prx/libSceAgcDriver/Execution/include/Driver/Driver.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Driver/Shaders/ShaderRegistry.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Driver/Diagnostics.hpp"
+#include "prx/libSceAgcDriver/Execution/include/Driver/Draw/DrawPipeline.hpp"
 #include "prx/libSceAgcDriver/Execution/include/GuestMemory.hpp"
 #include <algorithm>
 #include <spirv/unified1/spirv.hpp>
@@ -28,6 +29,18 @@ void ReadUserWords(const QueueState& queue, DrawProgram& program, bool staticAbi
         program.userData.push_back(staticAbi ? ReadGraphicsRegister(queue.shader, program.userDataBase + i) : readUserData(queue.shader, program.userDataBase + i));
     }
     if ((program.binary.stage == ShaderRecompiler::ShaderStage::Vertex || program.binary.stage == ShaderRecompiler::ShaderStage::Fragment) && program.snapshot->header.empty() && program.snapshot->userDataTailRegister) program.tailContinuation = ReadUserDataTailContinuation(program.binary.code, program.firstUserSgpr, program.userData);
+}
+
+ShaderRecompiler::ShaderVertexStageInfo DecodeOrderedVertexStageInfo(std::span<const std::byte> header, std::uint64_t headerAddress, std::span<const std::uint32_t> userData, std::vector<Graphics::DecodeRead>& reads, std::uint32_t hiddenUserWords) {
+    const auto decode = [&] {
+        reads.clear();
+        return Graphics::DecodeVertexStageInfo(header, headerAddress, userData, &reads, false, hiddenUserWords);
+    };
+    auto info = decode();
+    if (!DrawPipeline::Active() || !DrawPipeline::Queue0().Busy()) return info;
+    if (std::none_of(reads.begin(), reads.end(), [](const Graphics::DecodeRead& read) { return DrawPipeline::Queue0().Overlaps(read.address, read.bytes.size()); })) return info;
+    DrawPipeline::Queue0().Drain(DrawPipeline::DrainReason::Capture);
+    return decode();
 }
 
 void InitializeMerged(const QueueState& queue, DrawProgram& program, std::uint32_t pointerBase, bool pointerRequired, bool staticAbi) {
