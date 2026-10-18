@@ -2243,7 +2243,9 @@ static void CheckDirectMemorySharedBackingRuns() {
     close(file);
     Require(GuestArena::GuestArenaSharedBackingRuns_nid_postfix(address + page, page * 3, &file, runs, 4, &count) && runs[0].offset == static_cast<std::uint64_t>(first) + page);
     close(file);
-    Require(!GuestArena::GuestArenaSharedBackingRuns_nid_postfix(address, page * 4, &file, runs, 1, &count) || count == 1);
+    const bool oneRun = GuestArena::GuestArenaSharedBackingRuns_nid_postfix(address, page * 4, &file, runs, 1, &count);
+    if (oneRun) close(file);
+    Require(!oneRun || count == 1);
     Require(!GuestArena::GuestArenaSharedBackingRuns_nid_postfix(address, page * 5, &file, runs, 4, &count));
     Require(!GuestArena::GuestArenaSharedBackingRuns_nid_postfix(address, 0, &file, runs, 4, &count));
     Require(sceKernelMunmap(reserved, page * 4) == 0);
