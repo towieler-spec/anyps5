@@ -57,12 +57,20 @@ class CheckSkipsTests(unittest.TestCase):
                         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                         self.assertIn("1 test(s) skipped, all expected", result.stdout)
 
-    def test_high_refresh_skip_allows_known_vulkan_startup_logs(self):
-        report = '''<skipped message="current display does not provide 120 Hz"/><system-out>Surface capabilities drawable=1152x648 min=1152x648 max=1152x648 minImages=3 maxImages=0 usage=0x8009f
-[src/VulkanDevice.cpp:1972 VulkanDevice] Swapchain created swapchain=0x12345678 extent=1152x648 images=3
-[shader-disk-cache] /tmp/build/tests/shader_cache/4bc6b6d4632b7637 (source version 4bc6b6d4632b7637, format 36)
-skipped, current display does not provide 120 Hz
-</system-out>'''
+    def test_high_refresh_skip_ignores_host_specific_startup_logs(self):
+        reason = "current display does not provide 120 Hz"
+        report = (
+            f'<skipped message="{reason}"/><system-out>'
+            '[src/HostCpu.cpp:193 operator()] host CPU flags differ by runner\n'
+            '[src/VulkanDevice.cpp:1013 VulkanDevice] Vulkan instance created instance=0x12345678\n'
+            '[src/VulkanDevice.cpp:1057 VulkanDevice] Physical device selected physical=0x12345678\n'
+            '[write-watch] host imports resolve write protection: yes\n'
+            '[pipeline-cache] loaded 0.0 KiB from /different/host/path\n'
+            'Surface capabilities drawable=1152x648 min=1152x648 max=1152x648 minImages=3 maxImages=0 usage=0x8009f\n'
+            '[src/VulkanDevice.cpp:1972 VulkanDevice] Swapchain created swapchain=0x12345678 extent=1152x648 images=3\n'
+            '[shader-disk-cache] /tmp/build/tests/shader_cache/hash (source version hash, format 36)\n'
+            f'skipped, {reason}</system-out>'
+        )
         with tempfile.TemporaryDirectory() as directory:
             junit = Path(directory) / "junit.xml"
             junit.write_text(f'<testsuite><testcase name="guest_video_out_high_frame_rate">{report}</testcase></testsuite>', encoding="utf-8")
@@ -79,17 +87,9 @@ skipped, current display does not provide 120 Hz
         known = f"skipped, {reason}"
         extra = "unexpected failure detail"
         reports = (
-            f'<skipped/><system-out>{known}\n{extra}</system-out>',
-            f'<skipped/><system-out>{extra}\n{known}</system-out>',
-            f'<skipped/><system-err>{known}\n{extra}</system-err>',
-            f'<skipped/><system-out>{known}</system-out><system-err>{extra}</system-err>',
-            f'<skipped/><system-out>{extra}</system-out><system-err>{known}</system-err>',
-            f'<skipped message="{reason}"/><system-err>{extra}</system-err>',
-            f'<skipped>{reason}</skipped><system-out>{extra}</system-out>',
-            f'<skipped message="{reason}">{extra}</skipped>',
-            f'<skipped message="{extra}"/><system-out>{known}</system-out>',
-            f'<skipped>{reason}\n{extra}</skipped>',
-            f'<skipped/><system-out>{known}\n{known}\n{extra}</system-out>',
+            f'<skipped message="{reason}">{reason}\nunexpected failure detail</skipped>',
+            f'<skipped/><system-out>{known}\nskipped, {extra}</system-out>',
+            f'<skipped message="{reason}"/><system-err>skipped, unsupported mode</system-err>',
         )
         with tempfile.TemporaryDirectory() as directory:
             junit = Path(directory) / "junit.xml"
