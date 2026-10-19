@@ -487,12 +487,17 @@ int VideoOutDriver::GetDisplayRefreshRate() {
     return displayRefreshRate.load();
 }
 
+std::uint32_t VideoOutDriver::GetDisplayResolution() {
+    return displayResolution.load();
+}
+
 void VideoOutDriver::updateDisplayRefreshRate() {
     const int display = SDL_GetWindowDisplayIndex(window.Handle());
     if (display < 0) throw std::runtime_error(std::string("SDL_GetWindowDisplayIndex failed: ") + SDL_GetError());
     SDL_DisplayMode mode{};
     if (SDL_GetCurrentDisplayMode(display, &mode) != 0) throw std::runtime_error(std::string("SDL_GetCurrentDisplayMode failed: ") + SDL_GetError());
     displayRefreshRate.store(mode.refresh_rate);
+    displayResolution.store((mode.w >= 3840 || mode.h >= 2160) ? VIDEO_OUT_RESOLUTION_2160P : VIDEO_OUT_RESOLUTION_1080P);
 }
 
 void VideoOutDriver::pollHostHdr() {
