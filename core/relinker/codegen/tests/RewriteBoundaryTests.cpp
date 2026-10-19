@@ -24,16 +24,13 @@ int main() {
         Require(result.Bytes == std::vector<std::uint8_t>{0x90, 0x90, 0x90, 0xC3});
 
         for (const auto& code : {
-                 std::vector<std::uint8_t>{0x66, 0xEB, 0x00, 0x90, 0xC3},
-                 std::vector<std::uint8_t>{0x90, 0x66, 0xEB, 0x00, 0xC3}
+                 std::vector<std::uint8_t>{0x66, 0xEB, 0x01, 0x90, 0xC3},
+                 std::vector<std::uint8_t>{0x90, 0x66, 0xEB, 0xFC, 0xC3}
              }) {
             bool rejected = false;
             try {
                 const auto offset = code[0] == 0x66 ? std::size_t{3} : std::size_t{0};
-                const std::vector<std::uint8_t> replacementBytes = code[0] == 0x66
-                    ? std::vector<std::uint8_t>{0x66, 0x90}
-                    : std::vector<std::uint8_t>{0x66, 0x90};
-                (void)rewriter.Rewrite(code, {offset, replacementBytes});
+                (void)rewriter.Rewrite(code, {offset, {0x66, 0x90}});
             } catch (const std::exception&) {
                 rejected = true;
             }
