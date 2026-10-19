@@ -255,7 +255,17 @@ VkPipeline LinkPipelineFromLibraries(const Context& context, const VkGraphicsPip
     }
     if (partsOnly) return VK_NULL_HANDLE;
     PerformanceTimer timing("Vulkan.GraphicsPipelineLink");
-    VkPipelineLibraryCreateInfoKHR linked{VK_STRUCTURE_TYPE_PIPELINE_LIBRARY_CREATE_INFO_KHR};
+    std::optional<std::pair<std::vector<VkSampleCountFlagBits>, VkSampleCountFlagBits>> sampleCounts;
+    for (auto* next = static_cast<const VkBaseInStructure*>(rendering.pNext); next != nullptr; next = next->pNext) {
+        if (next->sType != VK_STRUCTURE_TYPE_ATTACHMENT_SAMPLE_COUNT_INFO_NV) continue;
+        const auto& counts = *reinterpret_cast<const VkAttachmentSampleCountInfoNV*>(next);
+        sampleCounts.emplace(std::vector<VkSampleCountFlagBits>(counts.pColorAttachmentSamples, counts.pColorAttachmentSamples + counts.colorAttachmentCount), counts.depthStencilAttachmentSamples);
+    }
+    const auto attachmentSamples = [](const std::pair<std::vector<VkSampleCountFlagBits>, VkSampleCountFlagBits>& counts) {
+        return VkAttachmentSampleCountInfoNV{VK_STRUCTURE_TYPE_ATTACHMENT_SAMPLE_COUNT_INFO_NV, nullptr, static_cast<std::uint32_t>(counts.first.size()), counts.first.empty() ? nullptr : counts.first.data(), counts.second};
+    };
+    const auto linkedSamples = sampleCounts ? attachmentSamples(*sampleCounts) : VkAttachmentSampleCountInfoNV{};
+    VkPipelineLibraryCreateInfoKHR linked{VK_STRUCTURE_TYPE_PIPELINE_LIBRARY_CREATE_INFO_KHR, sampleCounts ? &linkedSamples : nullptr};
     linked.libraryCount = static_cast<std::uint32_t>(libraries.size());
     linked.pLibraries = libraries.data();
     VkGraphicsPipelineCreateInfo create{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, &linked};
@@ -277,9 +287,10 @@ VkPipeline LinkPipelineFromLibraries(const Context& context, const VkGraphicsPip
         const auto cache = context.pipelineCache;
         const auto cacheSynchronization = context.pipelineCacheSynchronization;
         const auto libraryLayout = fullLayout;
-        std::function<void()> relink = [slot, createPipelines, cache, cacheSynchronization, libraryLayout, libraries, &store, devicePointer = &device] {
+        std::function<void()> relink = [slot, createPipelines, cache, cacheSynchronization, libraryLayout, libraries, sampleCounts, attachmentSamples, &store, devicePointer = &device] {
             if (slot->released.load()) return;
-            VkPipelineLibraryCreateInfoKHR linked{VK_STRUCTURE_TYPE_PIPELINE_LIBRARY_CREATE_INFO_KHR};
+            const auto linkedSamples = sampleCounts ? attachmentSamples(*sampleCounts) : VkAttachmentSampleCountInfoNV{};
+            VkPipelineLibraryCreateInfoKHR linked{VK_STRUCTURE_TYPE_PIPELINE_LIBRARY_CREATE_INFO_KHR, sampleCounts ? &linkedSamples : nullptr};
             linked.libraryCount = static_cast<std::uint32_t>(libraries.size());
             linked.pLibraries = libraries.data();
             VkGraphicsPipelineCreateInfo create{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, &linked};
