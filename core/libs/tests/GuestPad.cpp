@@ -27,10 +27,26 @@ int APS5_VABI scePadResetOrientation(int);
 int APS5_VABI scePadSetAngularVelocityDeadbandState(int, bool);
 int APS5_VABI scePadSetAngularVelocityBiasCorrectionState(int, bool);
 int APS5_VABI scePadIsRemoteController(int, bool*);
+int APS5_VABI scePadGetControllerInformation(int, PadControllerInformation*);
+int APS5_VABI scePadGetExtControllerInformation(int, void*);
 int APS5_VABI scePadGetAccessibilityControllerState(int, std::uint32_t*);
 }
 
 static void Require(bool value) { if (!value) std::abort(); }
+
+static void CheckControllerInformation(int handle) {
+    PadControllerInformation info{};
+    Require(scePadGetControllerInformation(handle, &info) == PAD_OK);
+    Require(info.touchPadInfo.pixelDensity == 44.86f);
+    Require(info.touchPadInfo.resolution.x == 1920 && info.touchPadInfo.resolution.y == 1080);
+    Require(info.stickInfo.deadZoneLeft == 13 && info.stickInfo.deadZoneRight == 13);
+    Require(info.connectionType == 0 && info.connectedCount == 1 && info.connected && info.deviceClass == 0);
+    unsigned char ext[0x2c]{};
+    Require(scePadGetExtControllerInformation(handle, ext) == PAD_OK);
+    const auto* extBase = reinterpret_cast<const PadControllerInformation*>(ext);
+    Require(extBase->touchPadInfo.resolution.x == 1920 && extBase->touchPadInfo.resolution.y == 1080);
+    Require(extBase->stickInfo.deadZoneLeft == 13 && extBase->stickInfo.deadZoneRight == 13);
+}
 
 static void CheckInputCommands() {
     const auto path = std::filesystem::temp_directory_path() / ("anyps5-pad-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
@@ -145,13 +161,13 @@ static void CheckAngularVelocityDeadband(int handle) {
 static void CheckTouchContact() {
     PadInputState touch;
     touch.buttons = static_cast<std::uint32_t>(Pad::PadButton::TouchPad);
-    touch.touch[0] = {true, 960, 471, 0};
+    touch.touch[0] = {true, 960, 540, 0};
     PadPublishInput_nid_postfix(touch);
     const auto data = Pad::ReadState();
     Require((data.buttons & static_cast<std::uint32_t>(Pad::PadButton::TouchPad)) != 0);
     Require(data.touch_data_touch_num == 1);
     Require(data.touch_data_touch0_x == 960);
-    Require(data.touch_data_touch0_y == 471);
+    Require(data.touch_data_touch0_y == 540);
     PadPublishInput_nid_postfix(PadInputState{});
     Pad::ReadState();
 }
@@ -264,7 +280,7 @@ static void CheckInjectedState(const std::filesystem::path& path) {
             if (touched.touch_data_touch_num != 0) break;
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         } while (std::chrono::steady_clock::now() < touchDeadline);
-        Require(touched.touch_data_touch_num == 1 && touched.touch_data_touch0_x == x && touched.touch_data_touch0_y == 471);
+        Require(touched.touch_data_touch_num == 1 && touched.touch_data_touch0_x == x && touched.touch_data_touch0_y == 540);
         Require(touched.buttons == (0x2000 | 0x100000));
         std::this_thread::sleep_for(std::chrono::milliseconds(310));
         const auto lifted = Pad::ReadState();
@@ -345,6 +361,7 @@ int main() {
     CheckReadQueue(handle);
     CheckReadStateHandle(handle);
     CheckRemoteController(handle);
+    CheckControllerInformation(handle);
     CheckAccessibilityControllerState(handle);
     CheckInjectedState(commandPath);
     Require(scePadSetVibrationMode(handle, 1) == 0);
