@@ -149,6 +149,13 @@ int main(int argc, char** argv) {
     Require(add && add(2, 3) == 5);
     Require(dlclose_nid_postfix(second) == 0);
     Require(dlclose_nid_postfix(second) == -1);
+    const std::filesystem::path localPath = "anyps5-local-module-for-test.prx";
+    std::filesystem::copy_file(argv[1], localPath, std::filesystem::copy_options::overwrite_existing);
+    void* localOnly = dlopen_nid_postfix(localPath.string().c_str(), 2);
+    Require(localOnly != nullptr && dlsym_nid_postfix(localOnly, "GuestModuleAdd") != nullptr);
+    Require(dlsym_nid_postfix(nullptr, "GuestModuleAdd") == nullptr);
+    Require(dlclose_nid_postfix(localOnly) == 0);
+    std::filesystem::remove(localPath);
 
     const std::filesystem::path guest = "anyps5-relinked-module-for-test.prx";
     auto relinked = guest;

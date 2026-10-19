@@ -40,6 +40,23 @@ const ShaderWorkgroupInputInfo* ShaderWorkgroupInputFor(const SpirvEmitterState&
 
 std::uint32_t EmitBuiltinU32(SpirvEmitterState& state, StageInputKind kind, std::uint32_t component);
 
+std::uint32_t SampleMaskInputVariableOf(SpirvEmitterState& state) {
+    if (state.sampleMaskInputVariable != 0u) return state.sampleMaskInputVariable;
+    return InputVariableForKind(state, StageInputKind::SampleMask);
+}
+
+std::uint32_t LoadSampleMaskInput(SpirvEmitterState& state, std::uint32_t variable) {
+    const auto value = state.module.AllocateId();
+    if (state.sampleMaskInputCopy != 0u) {
+        state.module.AddFunction(spv::OpLoad, TypeI32(state), value, state.sampleMaskInputCopy);
+        return value;
+    }
+    const auto pointer = state.module.AllocateId();
+    state.module.AddFunction(spv::OpAccessChain, TypePointer(state, spv::StorageClassInput, TypeI32(state)), pointer, variable, ConstantU32(state, 0u));
+    state.module.AddFunction(spv::OpLoad, TypeI32(state), value, pointer);
+    return value;
+}
+
 std::uint32_t EmitQuadPixel(SpirvEmitterState& state) {
     const auto coordinate = [&](std::uint32_t component) {
         const auto value = Unary(state, spv::OpBitcast, TypeF32(state), EmitBuiltinU32(state, StageInputKind::FragCoord, component));
@@ -165,11 +182,8 @@ std::uint32_t EmitBuiltinU32(SpirvEmitterState& state, StageInputKind kind, std:
         return bits;
     }
     if (kind == StageInputKind::SampleMask) {
-        const auto pointer = state.module.AllocateId();
-        const auto value = state.module.AllocateId();
+        const auto value = LoadSampleMaskInput(state, variable);
         const auto bits = state.module.AllocateId();
-        state.module.AddFunction(spv::OpAccessChain, TypePointer(state, spv::StorageClassInput, TypeI32(state)), pointer, variable, ConstantU32(state, 0u));
-        state.module.AddFunction(spv::OpLoad, TypeI32(state), value, pointer);
         state.module.AddFunction(spv::OpBitcast, TypeU32(state), bits, value);
         return bits;
     }
@@ -188,6 +202,21 @@ std::uint32_t EmitBuiltinU32(SpirvEmitterState& state, StageInputKind kind, std:
         const auto bits = state.module.AllocateId();
         state.module.AddFunction(spv::OpAccessChain, TypePointer(state, spv::StorageClassInput, TypeF32(state)), pointer, variable, ConstantU32(state, component + 1u));
         state.module.AddFunction(spv::OpLoad, TypeF32(state), value, pointer);
+        if (kind == StageInputKind::BaryCoordSmooth && state.program.Metadata().barycentricBuiltinsUnnormalized) {
+            // Tech debt (docs/dev/debt/shader.md): Apple GPUs leave [[barycentric_coord, center_perspective]]
+            // unnormalized unless the fragment function reads [[position]], so the load keeps a use of gl_FragCoord.w
+            // that leaves the weight unchanged and that fast math cannot fold away.
+            const auto fragCoordW = state.module.AllocateId();
+            state.module.AddFunction(spv::OpBitcast, TypeF32(state), fragCoordW, EmitInputComponentU32(state, StageInputKind::FragCoord, 3u));
+            const auto magnitude = state.module.AllocateId();
+            state.module.AddFunction(spv::OpExtInst, TypeF32(state), magnitude, GlslStd450(state), GLSLstd450FAbs, fragCoordW);
+            const auto bound = state.module.AllocateId();
+            state.module.AddFunction(spv::OpFAdd, TypeF32(state), bound, value, magnitude);
+            const auto kept = state.module.AllocateId();
+            state.module.AddFunction(spv::OpExtInst, TypeF32(state), kept, GlslStd450(state), GLSLstd450FMin, value, bound);
+            state.module.AddFunction(spv::OpBitcast, TypeU32(state), bits, kept);
+            return bits;
+        }
         state.module.AddFunction(spv::OpBitcast, TypeU32(state), bits, value);
         return bits;
     }
@@ -344,7 +373,8 @@ std::uint32_t PackExport(SpirvEmitterState& state, IrBufferFormat format, std::u
 
 std::uint32_t SelectExportPacking(SpirvEmitterState& state, std::uint32_t target, std::uint32_t color) {
     const auto packing = state.module.SpecializationConstant(TypeU32(state), PipelineSpecialization::ExportPackingBase + target, static_cast<std::uint32_t>(ColorExportPacking::None));
-    const auto packed = EmitCompareU32Constant(state, spv::OpINotEqual, packing, static_cast<std::uint32_t>(ColorExportPacking::None));
+    const auto packedIndex = Binary(state, spv::OpISub, TypeU32(state), packing, ConstantU32(state, static_cast<std::uint32_t>(ColorExportPacking::Unorm10_11_11)));
+    const auto packed = EmitCompareU32Constant(state, spv::OpULessThanEqual, packedIndex, static_cast<std::uint32_t>(ColorExportPacking::Float11_11_10) - static_cast<std::uint32_t>(ColorExportPacking::Unorm10_11_11));
     const auto floating = EmitCompareU32Constant(state, spv::OpIEqual, packing, static_cast<std::uint32_t>(ColorExportPacking::Float11_11_10));
     const auto word = Select(state, TypeU32(state), floating, PackExport(state, IrBufferFormat::Format10_11_11Float, color), PackExport(state, IrBufferFormat::Format11_11_10UNorm, color));
     std::array<std::uint32_t, 4> components{};
@@ -910,7 +940,19 @@ void EmitPixelEntryPoint(SpirvEmitterState& state) {
     state.module.AddFunction(spv::OpFunction, TypeVoid(state), state.mainFunc, spv::FunctionControlMaskNone, TypeFunction(state));
     EmitLabel(state, state.module.AllocateId());
     state.module.AddFunction(spv::OpStore, state.pixelStopFlag, ConstantBool(state, false));
+    if (state.sampleMaskInputCopy != 0u) {
+        const auto pointer = state.module.AllocateId();
+        const auto value = state.module.AllocateId();
+        state.module.AddFunction(spv::OpAccessChain, TypePointer(state, spv::StorageClassInput, TypeI32(state)), pointer, SampleMaskInputVariableOf(state), ConstantU32(state, 0u));
+        state.module.AddFunction(spv::OpLoad, TypeI32(state), value, pointer);
+        state.module.AddFunction(spv::OpStore, state.sampleMaskInputCopy, value);
+    }
     state.module.AddFunction(spv::OpFunctionCall, TypeVoid(state), state.module.AllocateId(), state.pixelGuestFunc);
+    if (state.stencilRefOutput != 0u) {
+        const auto value = state.module.AllocateId();
+        state.module.AddFunction(spv::OpLoad, TypeI32(state), value, state.stencilRefVariable);
+        state.module.AddFunction(spv::OpStore, state.stencilRefOutput, value);
+    }
     if (state.pixelStopStored) {
         const auto stopped = state.module.AllocateId();
         const auto stop = state.module.AllocateId();
@@ -1300,6 +1342,17 @@ void EmitProgram(SpirvEmitterState& state) {
         state.pixelStopFlag = state.module.DefineGlobalVariable(TypePointer(state, spv::StorageClassPrivate, TypeBool(state)), spv::StorageClassPrivate);
         if (state.spirvVersion >= 0x00010400u) state.interfaceVariables.push_back(state.pixelStopFlag);
         state.module.AddName(state.pixelStopFlag, "bda_stopped");
+        if (SampleMaskInputVariableOf(state) != 0u) {
+            state.sampleMaskInputCopy = state.module.DefineGlobalVariable(TypePointer(state, spv::StorageClassPrivate, TypeI32(state)), spv::StorageClassPrivate);
+            if (state.spirvVersion >= 0x00010400u) state.interfaceVariables.push_back(state.sampleMaskInputCopy);
+            state.module.AddName(state.sampleMaskInputCopy, "sample_mask_in");
+        }
+        if (state.stencilRefVariable != 0u && !state.stencilReplay) {
+            state.stencilRefOutput = state.stencilRefVariable;
+            state.stencilRefVariable = state.module.DefineGlobalVariable(TypePointer(state, spv::StorageClassPrivate, TypeI32(state)), spv::StorageClassPrivate);
+            if (state.spirvVersion >= 0x00010400u) state.interfaceVariables.push_back(state.stencilRefVariable);
+            state.module.AddName(state.stencilRefVariable, "stencil_ref");
+        }
     }
     state.module.AddFunction(spv::OpFunction, TypeVoid(state), state.meshGuestFunc != 0u ? state.meshGuestFunc : state.pixelGuestFunc != 0u ? state.pixelGuestFunc : state.mainFunc, spv::FunctionControlMaskNone, TypeFunction(state));
     EmitLabel(state, state.entryLabel);
@@ -1364,11 +1417,20 @@ void EmitProgram(SpirvEmitterState& state) {
             const auto row = Select(state, TypeU32(state), lower, bottom, top);
             const auto shift = EmitBinaryU32(state, spv::OpShiftLeftLogical, EmitBinaryU32(state, spv::OpBitwiseAnd, quad, ConstantU32(state, 1u)), ConstantU32(state, 4u));
             const auto covered = EmitBinaryU32(state, spv::OpBitwiseAnd, EmitBinaryU32(state, spv::OpShiftRightLogical, row, shift), ConstantU32(state, 0xffffu));
-            const auto pointer = state.module.AllocateId();
-            state.module.AddFunction(spv::OpAccessChain, TypePointer(state, spv::StorageClassInput, TypeI32(state)), pointer, state.sampleMaskInputVariable, ConstantU32(state, 0u));
-            const auto rasterized = state.module.AllocateId();
-            state.module.AddFunction(spv::OpLoad, TypeI32(state), rasterized, pointer);
-            bit = EmitBinaryU32(state, spv::OpBitwiseAnd, Unary(state, spv::OpBitcast, TypeU32(state), rasterized), covered);
+            const auto rasterized = LoadSampleMaskInput(state, state.sampleMaskInputVariable);
+            auto ownSamples = Unary(state, spv::OpBitcast, TypeU32(state), rasterized);
+            if (state.program.Metadata().pixelIteratesSamples) {
+                std::uint32_t sample = 0;
+                if (state.ownSampleIdVariable != 0) {
+                    const auto loaded = state.module.AllocateId();
+                    state.module.AddFunction(spv::OpLoad, TypeI32(state), loaded, state.ownSampleIdVariable);
+                    sample = Unary(state, spv::OpBitcast, TypeU32(state), loaded);
+                } else {
+                    sample = EmitBuiltinU32(state, StageInputKind::SampleId, 0u);
+                }
+                ownSamples = EmitBinaryU32(state, spv::OpBitwiseAnd, ownSamples, EmitBinaryU32(state, spv::OpShiftLeftLogical, ConstantU32(state, 1u), sample));
+            }
+            bit = EmitBinaryU32(state, spv::OpBitwiseAnd, ownSamples, covered);
             state.quadSampleCoverage = Unary(state, spv::OpBitcast, TypeI32(state), covered);
         }
         const auto mask = static_cast<std::uint32_t>(pixel.quadPixelMask);

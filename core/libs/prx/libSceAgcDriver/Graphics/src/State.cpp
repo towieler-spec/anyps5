@@ -30,6 +30,8 @@ void NormalizeUnusedViewportDepth(State& state, const ShaderRecompiler::ShaderPi
 
 namespace {
 
+
+
 std::uint32_t read(const Registers& registers, std::uint32_t offset, RegisterBank bank = RegisterBank::Context) {
     NoteRegisterRead(bank, offset);
     const auto it = registers.find(offset);
@@ -1440,7 +1442,7 @@ State DecodeState(const QueueState& queue, bool vertexWorkgroup) {
                 if ((weighted(state.colorBlendOp) && (constantColor(state.srcColorBlendFactor) || constantColor(state.dstColorBlendFactor))) || (weighted(state.alphaBlendOp) && (constantColor(state.srcAlphaBlendFactor) || constantColor(state.dstAlphaBlendFactor)))) throw std::runtime_error("AGC graphics: blending into an 8_8 color target with the alternate component order with a constant color factor, which Vulkan applies to the second channel with the green blend constant instead of the alpha one, is not implemented");
             }
         }
-        if (color.packing != ShaderRecompiler::ColorExportPacking::None) {
+        if (color.packing == ShaderRecompiler::ColorExportPacking::Unorm10_11_11 || color.packing == ShaderRecompiler::ColorExportPacking::Float11_11_10) {
             const std::string packed = std::string(color.packing == ShaderRecompiler::ColorExportPacking::Float11_11_10 ? "an " : "a ") + PackedColorTargetName(color.packing);
             const auto slotExport = (exportFormat >> (4u * color.exportIndex)) & 0xfu;
             if (slotExport == 5 || slotExport == 6) throw std::runtime_error("AGC graphics: color export format " + std::to_string(slotExport) + " into " + packed + " target is unsupported");
@@ -1481,10 +1483,25 @@ State DecodeState(const QueueState& queue, bool vertexWorkgroup) {
     return result;
 }
 
+ShaderRecompiler::ColorExportPacking RawIntegerExport(VkFormat format) {
+    switch (format) {
+        case VK_FORMAT_R8_UINT: case VK_FORMAT_R8G8_UINT: case VK_FORMAT_R8G8B8A8_UINT: case VK_FORMAT_B8G8R8A8_UINT: case VK_FORMAT_A8B8G8R8_UINT_PACK32:
+        case VK_FORMAT_A2R10G10B10_UINT_PACK32: case VK_FORMAT_A2B10G10R10_UINT_PACK32: case VK_FORMAT_R16_UINT: case VK_FORMAT_R16G16_UINT:
+        case VK_FORMAT_R16G16B16A16_UINT: case VK_FORMAT_R32_UINT: case VK_FORMAT_R32G32_UINT: case VK_FORMAT_R32G32B32A32_UINT:
+            return ShaderRecompiler::ColorExportPacking::RawUint;
+        case VK_FORMAT_R8_SINT: case VK_FORMAT_R8G8_SINT: case VK_FORMAT_R8G8B8A8_SINT: case VK_FORMAT_B8G8R8A8_SINT: case VK_FORMAT_A8B8G8R8_SINT_PACK32:
+        case VK_FORMAT_A2R10G10B10_SINT_PACK32: case VK_FORMAT_A2B10G10R10_SINT_PACK32: case VK_FORMAT_R16_SINT: case VK_FORMAT_R16G16_SINT:
+        case VK_FORMAT_R16G16B16A16_SINT: case VK_FORMAT_R32_SINT: case VK_FORMAT_R32G32_SINT: case VK_FORMAT_R32G32B32A32_SINT:
+            return ShaderRecompiler::ColorExportPacking::RawSint;
+        default:
+            return ShaderRecompiler::ColorExportPacking::None;
+    }
+}
+
 std::array<ShaderRecompiler::ColorExportPacking, 8> ExportPackings(const State& state) {
     std::array<ShaderRecompiler::ColorExportPacking, 8> packings{};
     for (const auto& color : state.colors) {
-        if (color.exportIndex < packings.size()) packings[color.exportIndex] = color.packing;
+        if (color.exportIndex < packings.size()) packings[color.exportIndex] = color.packing != ShaderRecompiler::ColorExportPacking::None || color.uintExport ? color.packing : RawIntegerExport(color.format);
     }
     return packings;
 }
@@ -1515,8 +1532,18 @@ std::uint8_t QuadPixelMask(const State& state) {
 }
 
 std::array<std::uint16_t, 4> QuadSampleMasks(const State& state) {
+    return QuadSampleMasks(state, false);
+}
+
+std::array<std::uint16_t, 4> QuadSampleMasks(const State& state, bool sampleShading) {
     std::array<std::uint16_t, 4> masks{0xffffu, 0xffffu, 0xffffu, 0xffffu};
-    if (!PartialSampleMask(state) || UniformSampleMask(state)) return masks;
+    if (!PartialSampleMask(state)) return masks;
+    if (UniformSampleMask(state)) {
+        if (!sampleShading) return masks;
+        const auto full = (1u << state.samples) - 1u;
+        masks.fill(static_cast<std::uint16_t>(state.quadSampleMask[0] & full));
+        return masks;
+    }
     const auto full = (1u << state.samples) - 1u;
     if (std::ranges::all_of(state.quadSampleMask, [&](std::uint16_t mask) { return (mask & full) == 0u || (mask & full) == full; })) return masks;
     for (std::size_t pixel = 0; pixel < masks.size(); ++pixel) {

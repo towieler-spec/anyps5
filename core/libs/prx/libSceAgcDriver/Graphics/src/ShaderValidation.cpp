@@ -689,8 +689,10 @@ std::set<std::uint32_t> ValidateShaders(std::span<const CompiledShader> shaders,
         if (location >= attachments) continue;
         const auto color = std::find_if(state.colors.begin(), state.colors.end(), [&](const ColorTarget& target) { return target.exportIndex == location; });
         const bool uintExport = color != state.colors.end() && color->uintExport;
-        const bool packed = color != state.colors.end() && color->packing != ShaderRecompiler::ColorExportPacking::None;
-        Require(signature == (uintExport || packed ? "vertex:u32x4" : "vertex:f32x4"), packed ? "fragment shader must export uint4 words to its packed color attachments" : uintExport ? "fragment shader must export uint4 colors to its unsigned integer attachments" : "fragment shader must export float4 colors to its attachments");
+        const bool packed = color != state.colors.end() && (color->packing == ShaderRecompiler::ColorExportPacking::Unorm10_11_11 || color->packing == ShaderRecompiler::ColorExportPacking::Float11_11_10);
+        const auto raw = color != state.colors.end() && color->packing == ShaderRecompiler::ColorExportPacking::None && !color->uintExport ? RawIntegerExport(color->format) : ShaderRecompiler::ColorExportPacking::None;
+        const auto rawSignature = raw == ShaderRecompiler::ColorExportPacking::RawUint ? "vertex:u32x4" : raw == ShaderRecompiler::ColorExportPacking::RawSint ? "vertex:i32x4" : "";
+        Require(signature == (uintExport || packed ? "vertex:u32x4" : "vertex:f32x4") || signature == rawSignature, packed ? "fragment shader must export uint4 words to its packed color attachments" : uintExport ? "fragment shader must export uint4 colors to its unsigned integer attachments" : "fragment shader must export float4 colors to its attachments");
         locations.insert(location);
     }
     Require((!state.dualSourceBlend && state.reversedBlend == 0) || previous.secondSource == "f32x4", "dual-source blending needs a float4 second color at location 0 index 1");

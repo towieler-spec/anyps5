@@ -31,14 +31,36 @@
 #include <sys/uio.h>
 #include <unistd.h>
 #include <cstdio>
+#ifdef __APPLE__
+#include <filesystem>
+#include <sys/param.h>
+#endif
 #endif
 
 extern "C" int* APS5_VABI __error_nid_postfix();
 
 namespace {
 
+#ifdef __APPLE__
+const std::string& NamedObjectDirectory() {
+    static const auto* directory = [] {
+        const int savedError = errno;
+        const auto requested = std::filesystem::temp_directory_path() / "anyps5-shm";
+        if (::mkdir(requested.c_str(), 0700) != 0 && errno != EEXIST) throw std::runtime_error("shm_open: creating the shared-memory directory failed, errno=" + std::to_string(errno));
+        auto* path = new std::string(std::filesystem::canonical(requested).string());
+        errno = savedError;
+        return path;
+    }();
+    return *directory;
+}
+#endif
+
 bool IsHostSharedMemoryDescriptor(int descriptor) {
-#ifdef __linux__
+#ifdef __APPLE__
+    char objectPath[MAXPATHLEN];
+    if (::fcntl(descriptor, F_GETPATH, objectPath) != 0) return false;
+    return std::string_view(objectPath).starts_with(NamedObjectDirectory() + "/anyps5-shm-");
+#elif defined(__linux__)
     char descriptorPath[64];
     std::snprintf(descriptorPath, sizeof(descriptorPath), "/proc/self/fd/%d", descriptor);
     char objectPath[4096];
@@ -56,14 +78,18 @@ bool IsHostSharedMemoryDescriptor(int descriptor) {
 class HostShmLock {
 public:
     HostShmLock() {
-#ifdef __linux__
+#if defined(__linux__) || defined(__APPLE__)
+#ifdef __APPLE__
+        descriptor = ::open(NamedObjectDirectory().c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+#else
         descriptor = ::open("/dev/shm", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+#endif
         if (descriptor < 0 || ::flock(descriptor, LOCK_EX) != 0) error = errno;
 #endif
     }
 
     ~HostShmLock() {
-#ifdef __linux__
+#if defined(__linux__) || defined(__APPLE__)
         const int savedError = errno;
         if (descriptor >= 0) {
             if (!error) ::flock(descriptor, LOCK_UN);
@@ -149,6 +175,22 @@ std::string NamedHostPath(const char* path, int& error) {
     return hostName;
 }
 
+int HostNamedOpen(const std::string& hostName, int flags, int mode) {
+#ifdef __APPLE__
+    return ::open((NamedObjectDirectory() + hostName).c_str(), flags | O_NOFOLLOW, mode);
+#else
+    return ::shm_open(hostName.c_str(), flags, mode);
+#endif
+}
+
+int HostNamedUnlink(const std::string& hostName) {
+#ifdef __APPLE__
+    return ::unlink((NamedObjectDirectory() + hostName).c_str());
+#else
+    return ::shm_unlink(hostName.c_str());
+#endif
+}
+
 int OpenNamedFile(const char* path, int flags, int mode) {
     int validationError = 0;
     const auto hostName = NamedHostPath(path, validationError);
@@ -167,19 +209,19 @@ int OpenNamedFile(const char* path, int flags, int mode) {
     bool created = false;
     int descriptor;
     if (flags & SCE_KERNEL_O_CREAT) {
-        descriptor = ::shm_open(hostName.c_str(), hostFlags | O_CLOEXEC | O_EXCL, permissions);
+        descriptor = HostNamedOpen(hostName, hostFlags | O_CLOEXEC | O_EXCL, permissions);
         created = descriptor >= 0;
         if (descriptor < 0 && errno == EEXIST && !(flags & SCE_KERNEL_O_EXCL)) {
-            descriptor = ::shm_open(hostName.c_str(), (hostFlags & ~(O_CREAT | O_EXCL)) | O_CLOEXEC, 0);
+            descriptor = HostNamedOpen(hostName, (hostFlags & ~(O_CREAT | O_EXCL)) | O_CLOEXEC, 0);
         }
     } else {
-        descriptor = ::shm_open(hostName.c_str(), hostFlags | O_CLOEXEC, 0);
+        descriptor = HostNamedOpen(hostName, hostFlags | O_CLOEXEC, 0);
     }
     if (descriptor >= 0) {
         if (!created || ::fchmod(descriptor, permissions) == 0) return descriptor;
         const int error = errno;
         ::close(descriptor);
-        ::shm_unlink(hostName.c_str());
+        HostNamedUnlink(hostName);
         if (const int guest = NamedGuestError(error)) return Fail(guest);
         throw std::runtime_error("shm_open: setting guest creation permissions failed, errno=" + std::to_string(error));
     }
@@ -208,6 +250,13 @@ int CreateAnonymousFile() {
     }
     errno = EEXIST;
     return -1;
+#elif defined(__APPLE__)
+    auto path = NamedObjectDirectory() + "/anyps5-shm-anonymous-XXXXXX";
+    const int descriptor = mkstemp(path.data());
+    if (descriptor < 0) return -1;
+    unlink(path.c_str());
+    fcntl(descriptor, F_SETFD, FD_CLOEXEC);
+    return descriptor;
 #else
     const int descriptor = memfd_create("anyps5 shm_open", MFD_CLOEXEC);
     return descriptor;
@@ -484,13 +533,17 @@ extern "C" int APS5_VABI shm_unlink_nid_postfix(const char* path) {
         if (const int guest = NamedGuestError(errno)) return Fail(guest);
         throw std::runtime_error("shm_unlink: locking the host shared-memory namespace failed, errno=" + std::to_string(errno));
     }
+#ifdef __APPLE__
+    const auto objectPath = NamedObjectDirectory() + hostName;
+#else
     const auto objectPath = "/dev/shm" + hostName;
+#endif
     if (::faccessat(AT_FDCWD, objectPath.c_str(), R_OK | W_OK, AT_EACCESS) != 0) {
         const int error = errno;
         if (const int guest = NamedGuestError(error)) return Fail(guest);
         throw std::runtime_error("shm_unlink: checking shared-memory permissions failed, errno=" + std::to_string(error));
     }
-    if (::shm_unlink(hostName.c_str()) == 0) return 0;
+    if (HostNamedUnlink(hostName) == 0) return 0;
     const int error = errno;
     if (const int guest = NamedGuestError(error)) return Fail(guest);
     throw std::runtime_error("shm_unlink: removing the host named object failed, errno=" + std::to_string(error));

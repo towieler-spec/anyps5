@@ -45,6 +45,9 @@ void PrintFailure(std::exception_ptr error) {
         std::rethrow_exception(error);
     } catch (const std::exception& cause) {
         std::fprintf(stderr, "[gpu] driver failure: %s\n", cause.what());
+#if defined(__APPLE__)
+        PrintRecentWork();
+#endif
     } catch (...) {
         std::fprintf(stderr, "[gpu] driver failure with a non-standard exception\n");
     }
@@ -71,6 +74,14 @@ void MapDriverMemory() {
 #ifdef _WIN32
     mapped = reinterpret_cast<void*>(DriverMemoryAddress);
     GuestArena::GuestArenaCommit_nid_postfix(mapped, DriverMemoryBytes, PAGE_READWRITE, DriverMemoryBytes);
+#elif defined(__APPLE__)
+    mapped = mmap(reinterpret_cast<void*>(DriverMemoryAddress), DriverMemoryBytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (mapped == MAP_FAILED) throw std::system_error(errno, std::generic_category(), "map the AGC driver memory");
+    if (reinterpret_cast<std::uint64_t>(mapped) != DriverMemoryAddress) {
+        munmap(mapped, DriverMemoryBytes);
+        std::fprintf(stderr, "[gpu] the AGC driver memory at 0x%llx is held by the macOS host (0xfc0000000-0x1000000000), so shaders that call the FS table there fault\n", static_cast<unsigned long long>(DriverMemoryAddress));
+        return;
+    }
 #else
     mapped = mmap(reinterpret_cast<void*>(DriverMemoryAddress), DriverMemoryBytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
     if (mapped == MAP_FAILED) throw std::system_error(errno, std::generic_category(), "map the AGC driver memory");
@@ -96,11 +107,21 @@ bool StackHoldsImport() {
     ULONG_PTR low = 0;
     ULONG_PTR high = 0;
     GetCurrentThreadStackLimits(&low, &high);
+#elif defined(__APPLE__)
+    const auto self = pthread_self();
+    const auto high = reinterpret_cast<std::uintptr_t>(pthread_get_stackaddr_np(self));
+    const auto size = pthread_get_stacksize_np(self);
+    if (high == 0 || size == 0 || size > high) return false;
+    const auto low = high - size;
 #else
     struct Bounds {
         std::uintptr_t low = 0;
         std::uintptr_t high = 0;
         Bounds() {
+#ifdef __APPLE__
+            high = reinterpret_cast<std::uintptr_t>(pthread_get_stackaddr_np(pthread_self()));
+            low = high - pthread_get_stacksize_np(pthread_self());
+#else
             pthread_attr_t attributes;
             if (pthread_getattr_np(pthread_self(), &attributes) != 0) return;
             void* base = nullptr;
@@ -110,6 +131,7 @@ bool StackHoldsImport() {
                 high = low + size;
             }
             pthread_attr_destroy(&attributes);
+#endif
         }
     };
     thread_local const Bounds bounds;

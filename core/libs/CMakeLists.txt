@@ -11,11 +11,22 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 endif()
 
+# The guest unwinder steps through the runtime's own frames, and on macOS it reads them from DWARF
+# (__eh_frame); ld64 otherwise folds that into compact unwind info and drops it.
+if(APPLE)
+    add_link_options(LINKER:-no_compact_unwind)
+endif()
+
+# A prx finds the others beside itself. The build-tree rpath would point a patched copy at the
+# unpatched libraries. dyld does not know $ORIGIN.
 if(APPLE)
     set(ANYPS5_PRX_RPATH "@loader_path")
 else()
     set(ANYPS5_PRX_RPATH "$ORIGIN")
 endif()
+function(configure_prx_rpath target)
+    set_target_properties(${target} PROPERTIES BUILD_WITH_INSTALL_RPATH ON INSTALL_RPATH "${ANYPS5_PRX_RPATH}")
+endfunction()
 
 add_executable(nid_patcher
         ${CMAKE_CURRENT_SOURCE_DIR}/nid/src/Sha1.cpp
@@ -83,6 +94,7 @@ set(LIBS_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR})
 add_subdirectory(${LIBC_DIR} ${CMAKE_CURRENT_BINARY_DIR}/prx/libc)
 target_include_directories(libc PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 configure_windows_unwind(libc)
+configure_prx_rpath(libc)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_link_options(libc PRIVATE LINKER:-z,now)
     target_link_options(libc INTERFACE LINKER:--no-as-needed)
@@ -139,6 +151,7 @@ foreach(LIB_DIR ${LIBS_DIRS})
             configure_windows_unwind(${LIB_NAME})
         endif()
 
+        configure_prx_rpath(${LIB_NAME})
         if(LIB_NAME STREQUAL "libkernel")
             target_link_libraries(${LIB_NAME} PUBLIC libc)
         else()
@@ -274,6 +287,9 @@ if(BUILD_TESTING)
         target_link_options(patched_libraries_tests PRIVATE -static -static-libgcc -static-libstdc++)
     endif()
     add_test(NAME patched_libraries COMMAND patched_libraries_tests ${PATCHED_DIR})
+    if(APPLE)
+        set_tests_properties(patched_libraries PROPERTIES TIMEOUT 240)
+    endif()
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         add_library(host_libstdcxx_exception_module SHARED tests/HostLibstdcxxExceptionModule.cpp)
         target_link_libraries(host_libstdcxx_exception_module PRIVATE ${PATCHED_DIR}/libc.prx)

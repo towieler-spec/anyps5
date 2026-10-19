@@ -18,6 +18,13 @@ std::int64_t APS5_VABI sceKernelRead(int, void*, std::size_t);
 int APS5_VABI sceKernelLseek(int, std::int64_t, int);
 int APS5_VABI sceKernelGetdents(int, char*, int);
 int APS5_VABI sceKernelGetdirentries(int, char*, int, std::int64_t*);
+#ifdef __APPLE__
+int APS5_VABI sceKernelAllocateDirectMemory(std::int64_t, std::int64_t, std::size_t, std::size_t, int, std::int64_t*);
+int APS5_VABI sceKernelMapDirectMemory(void**, std::size_t, int, int, std::int64_t, std::size_t);
+int APS5_VABI sceKernelMprotect(void*, std::size_t, int);
+int APS5_VABI sceKernelMunmap(void*, std::size_t);
+int APS5_VABI sceKernelReleaseDirectMemory(std::int64_t, std::size_t);
+#endif
 int APS5_VABI getdents_nid_postfix(int, char*, int);
 int APS5_VABI getdirentries_nid_postfix(int, char*, int, std::int64_t*);
 int* APS5_VABI __error_nid_postfix();
@@ -125,6 +132,23 @@ int main() {
     std::map<std::string, Entry> dents;
     const int dentsRead = getdents_nid_postfix(directory, large.data(), static_cast<int>(large.size()));
     Require(dentsRead == readAll && Collect(large.data(), dentsRead, dents) == 6);
+#ifdef __APPLE__
+    constexpr std::size_t page = 0x4000;
+    std::int64_t physical = 0;
+    Require(sceKernelAllocateDirectMemory(0, 0x7fffffffffll, page, 0, 0, &physical) == 0);
+    void* mapping = nullptr;
+    Require(sceKernelMapDirectMemory(&mapping, page, 3, 0, physical, 0) == 0 && mapping != nullptr);
+    Require(sceKernelLseek(directory, 0, 0) == 0);
+    Require(sceKernelGetdirentries(directory, static_cast<char*>(mapping), 4096, &posixBase) > 0);
+    Require(sceKernelMprotect(mapping, page, 1) == 0);
+    Require(sceKernelLseek(directory, 0, 0) == 0);
+    Require(sceKernelGetdirentries(directory, static_cast<char*>(mapping), 4096, &posixBase) == ErrorEfault);
+    Require(sceKernelGetdirentries(12345, static_cast<char*>(mapping), 4096, &posixBase) == ErrorEbadf);
+    Require(sceKernelGetdirentries(directory, large.data(), static_cast<int>(large.size()), static_cast<std::int64_t*>(mapping)) == ErrorEfault);
+    Require(sceKernelMprotect(mapping, page, 3) == 0);
+    Require(sceKernelMunmap(mapping, page) == 0);
+    Require(sceKernelReleaseDirectMemory(physical, page) == 0);
+#endif
     Require(sceKernelClose(directory) == 0);
     Require(getdents_nid_postfix(directory, large.data(), static_cast<int>(large.size())) == -1 && *__error_nid_postfix() == 9);
     *__error_nid_postfix() = 0;

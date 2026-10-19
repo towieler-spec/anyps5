@@ -36,7 +36,8 @@ export async function downloadLibraries(target) {
   if (!response.ok) throw new Error(`Cannot load release manifest (${response.status})`);
   const release = await response.json();
   const asset = release.platforms[target];
-  if (!asset || !Number.isSafeInteger(asset.size) || asset.size < 0 || asset.size > 512 * 1024 * 1024 || !/^libraries\/(windows|linux)-[a-f0-9]+\.zip$/u.test(asset.path) || !/^[a-f0-9]{64}$/u.test(asset.sha256)) throw new Error("Invalid release manifest");
+  if (!asset && target === "macos") return { file: null, release, expandedBytes: 0 };
+  if (!asset || !Number.isSafeInteger(asset.size) || asset.size < 0 || asset.size > 512 * 1024 * 1024 || !/^libraries\/(windows|linux|macos)-[a-f0-9]+\.zip$/u.test(asset.path) || !/^[a-f0-9]{64}$/u.test(asset.sha256)) throw new Error("Invalid release manifest");
   const latestResponse = await fetch("https://api.github.com/repos/boykopovar/AnyPS5/releases/latest", { headers: { Accept: "application/vnd.github+json" } });
   if (!latestResponse.ok) {
     const rateLimited = latestResponse.status === 429 || (latestResponse.status === 403 && latestResponse.headers.get("x-ratelimit-remaining") === "0");
@@ -130,7 +131,7 @@ self.onmessage = async ({ data }) => {
       }
       self.postMessage({ type: "inspection-complete", count: inputs.length });
     } else if (data.type === "convert") {
-      if (data.target !== "linux" && data.target !== "windows") throw new Error(`Unsupported conversion target: ${data.target}`);
+      if (data.target !== "linux" && data.target !== "windows" && data.target !== "macos") throw new Error(`Unsupported conversion target: ${data.target}`);
       if (!["memory", "zip", "disk"].includes(data.mode)) throw new Error("Unknown save mode");
       if (data.target === "windows" && data.mode === "disk") throw new Error("Windows folder output is unavailable because browsers block DLL creation. Choose a ZIP save mode.");
       if (!inputs.length || summaries.length !== inputs.length) throw new Error("Inspect the selected apps before converting.");
@@ -189,7 +190,9 @@ self.onmessage = async ({ data }) => {
         if (writer) await writer.close();
         await destination.close();
       }
-      self.postMessage({ type: "complete", mode: data.mode, blob: data.mode === "memory" ? new Blob(chunks, { type: "application/zip" }) : null, outputName, size, release: libraries.release.tag, apps: inputs.length });
+      self.postMessage({ type: "complete", mode: data.mode, blob: data.mode === "memory" ? new Blob(chunks, { type: "application/zip" }) : null, outputName, size, release: libraries.release.tag, libraries: Boolean(libraries.file), apps: inputs.length });
+      if (archive) await archive.close();
+      archive = null;
       inputs = [];
       summaries = [];
     } else throw new Error("Unknown worker request");

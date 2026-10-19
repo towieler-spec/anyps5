@@ -3,6 +3,7 @@
 
 #include "PipelineSpecialization.hpp"
 #include "Recompiler.hpp"
+#include <algorithm>
 #include <array>
 #include <initializer_list>
 #include <limits>
@@ -19,6 +20,7 @@ namespace ShaderRecompiler {
 inline std::vector<std::uint32_t> SpecializeFragmentOutputs(std::vector<std::uint32_t> words, std::span<const PipelineSpecializationConstant> constants, const std::set<std::uint32_t>& specializedIds) {
     namespace Code = ReversedBlendCode;
     std::set<std::uint32_t> packed;
+    std::map<std::uint32_t, bool> raw;
     bool dualSource = false;
     std::uint32_t reversed = 0;
     for (const auto& constant : constants) {
@@ -32,10 +34,11 @@ inline std::vector<std::uint32_t> SpecializeFragmentOutputs(std::vector<std::uin
             reversed = constant.value;
         }
         if (constant.id < PipelineSpecialization::ExportPackingBase || constant.id >= PipelineSpecialization::ExportPackingBase + 8u) continue;
-        if (constant.value > static_cast<std::uint32_t>(ColorExportPacking::Float11_11_10)) throw std::runtime_error("invalid prepared fragment export packing");
-        if (constant.value != static_cast<std::uint32_t>(ColorExportPacking::None)) packed.insert(constant.id - PipelineSpecialization::ExportPackingBase);
+        if (constant.value > static_cast<std::uint32_t>(ColorExportPacking::RawSint)) throw std::runtime_error("invalid prepared fragment export packing");
+        if (constant.value == static_cast<std::uint32_t>(ColorExportPacking::Unorm10_11_11) || constant.value == static_cast<std::uint32_t>(ColorExportPacking::Float11_11_10)) packed.insert(constant.id - PipelineSpecialization::ExportPackingBase);
+        if (constant.value == static_cast<std::uint32_t>(ColorExportPacking::RawUint) || constant.value == static_cast<std::uint32_t>(ColorExportPacking::RawSint)) raw.emplace(constant.id - PipelineSpecialization::ExportPackingBase, constant.value == static_cast<std::uint32_t>(ColorExportPacking::RawSint));
     }
-    if (packed.empty() && !dualSource && reversed == 0u) return words;
+    if (packed.empty() && raw.empty() && !dualSource && reversed == 0u) return words;
     if (words.size() < 5u || words[0] != spv::MagicNumber) throw std::runtime_error("invalid fragment output specialization module");
     std::map<std::uint32_t, std::uint32_t> locations;
     std::set<std::uint32_t> indexed;
@@ -77,13 +80,17 @@ inline std::vector<std::uint32_t> SpecializeFragmentOutputs(std::vector<std::uin
         }
         return variable;
     };
-    std::set<std::uint32_t> retyped;
+    std::map<std::uint32_t, bool> retyped;
+    for (const auto& [location, signedWords] : raw) {
+        const auto variable = output(location);
+        if (variable != 0u && floatVectorPointer(outputs.at(variable))) retyped.emplace(variable, signedWords);
+    }
     for (const auto location : packed) {
         const auto variable = output(location);
         if (variable == 0u) continue;
         if (!specializedIds.contains(PipelineSpecialization::ExportPackingBase + location)) throw std::runtime_error("fragment output " + std::to_string(location) + " has no color export packing path");
         if (!floatVectorPointer(outputs.at(variable))) throw std::runtime_error("packed fragment output " + std::to_string(location) + " is not a float4");
-        retyped.insert(variable);
+        retyped.emplace(variable, false);
     }
     const auto secondSource = dualSource ? output(1u) : 0u;
     if (retyped.contains(secondSource)) throw std::runtime_error("the second dual-source blend color cannot be packed");
@@ -114,9 +121,14 @@ inline std::vector<std::uint32_t> SpecializeFragmentOutputs(std::vector<std::uin
         declarations.push_back(std::move(instruction));
         return id;
     };
-    const auto wordType = retyped.empty() ? 0u : declare({spv::OpTypeInt, 32u, 0u});
-    const auto vectorType = retyped.empty() ? 0u : declare({spv::OpTypeVector, wordType, 4u});
-    const auto pointerType = retyped.empty() ? 0u : declare({spv::OpTypePointer, spv::StorageClassOutput, vectorType});
+    const bool unsignedWords = std::ranges::any_of(retyped, [](const auto& item) { return !item.second; });
+    const bool signedWords = std::ranges::any_of(retyped, [](const auto& item) { return item.second; });
+    const auto wordType = unsignedWords ? declare({spv::OpTypeInt, 32u, 0u}) : 0u;
+    const auto vectorType = unsignedWords ? declare({spv::OpTypeVector, wordType, 4u}) : 0u;
+    const auto pointerType = unsignedWords ? declare({spv::OpTypePointer, spv::StorageClassOutput, vectorType}) : 0u;
+    const auto signedWordType = signedWords ? declare({spv::OpTypeInt, 32u, 1u}) : 0u;
+    const auto signedVectorType = signedWords ? declare({spv::OpTypeVector, signedWordType, 4u}) : 0u;
+    const auto signedPointerType = signedWords ? declare({spv::OpTypePointer, spv::StorageClassOutput, signedVectorType}) : 0u;
     const auto colorType = blended == 0u ? 0u : key(outputs.at(blended))[2];
     const auto floatType = blended == 0u ? 0u : key(colorType)[1];
     const auto zero = blended == 0u ? 0u : allocate();
@@ -141,7 +153,7 @@ inline std::vector<std::uint32_t> SpecializeFragmentOutputs(std::vector<std::uin
         if (op == spv::OpVariable && retyped.contains(operand(2u))) {
             if (count != 4u) throw std::runtime_error("a packed fragment output has an initializer");
             std::vector<std::uint32_t> variable(words.begin() + cursor, words.begin() + cursor + count);
-            variable[1] = pointerType;
+            variable[1] = retyped.at(operand(2u)) ? signedPointerType : pointerType;
             variables.push_back(std::move(variable));
             cursor += count;
             continue;
@@ -172,7 +184,7 @@ inline std::vector<std::uint32_t> SpecializeFragmentOutputs(std::vector<std::uin
         if (op == spv::OpStore && count >= 3u && retyped.contains(operand(1u))) {
             if (bound == std::numeric_limits<std::uint32_t>::max()) throw std::runtime_error("fragment output specialization module ID overflow");
             const auto bits = bound++;
-            result.insert(result.end(), {(4u << 16u) | spv::OpBitcast, vectorType, bits, operand(2u)});
+            result.insert(result.end(), {(4u << 16u) | spv::OpBitcast, retyped.at(operand(1u)) ? signedVectorType : vectorType, bits, operand(2u)});
             result.insert(result.end(), words.begin() + cursor, words.begin() + cursor + count);
             result[result.size() - count + 2u] = bits;
             cursor += count;

@@ -34,10 +34,14 @@ short APS5_VABI _LDsign_nid_postfix(long double);
 static void Require(bool value) { if (!value) std::abort(); }
 
 static long double Extended(std::uint16_t signExponent, std::uint64_t mantissa) {
+    volatile std::uint16_t runtimeExponent = signExponent;
+    volatile std::uint64_t runtimeMantissa = mantissa;
+    const std::uint16_t exponentBits = runtimeExponent;
+    const std::uint64_t mantissaBits = runtimeMantissa;
     long double value = 0;
     unsigned char bytes[sizeof(long double)] = {};
-    std::memcpy(bytes, &mantissa, sizeof(mantissa));
-    std::memcpy(bytes + 8, &signExponent, sizeof(signExponent));
+    std::memcpy(bytes, &mantissaBits, sizeof(mantissaBits));
+    std::memcpy(bytes + 8, &exponentBits, sizeof(exponentBits));
     std::memcpy(&value, bytes, sizeof(bytes));
     return value;
 }

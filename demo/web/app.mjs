@@ -15,6 +15,9 @@ let outputTransaction;
 let downloadUrl;
 let logs = [];
 let release;
+let intelChoice = false;
+let shownTarget = "windows";
+const selectedTarget = () => document.querySelector('input[name="target"]:checked').value;
 const canSaveZip = typeof window.showSaveFilePicker === "function" && window.isSecureContext;
 const canStream = typeof window.showDirectoryPicker === "function" && window.isSecureContext;
 const supported = window.isSecureContext && window.Worker && window.WebAssembly && window.ReadableStream && window.WritableStream && window.crypto?.subtle;
@@ -38,14 +41,23 @@ function sum(values) {
 }
 
 function update() {
-  const target = document.querySelector('input[name="target"]:checked').value;
+  const target = selectedTarget();
   const multi = selectedInputs.length > 1;
   const inspected = inspectionComplete && summaries.length === selectedInputs.length;
+  const macos = target === "macos";
+  const bundled = release?.platforms[target] !== undefined;
+  if (target !== shownTarget) {
+    if (macos) { intelChoice = $("intel").checked; $("intel").checked = true; }
+    else if (shownTarget === "macos") $("intel").checked = intelChoice;
+    shownTarget = target;
+  }
+  $("intel").disabled = working || !supported || macos;
+  $("intel-note").hidden = !macos;
   const folderBlocked = $("save").value === "disk" && (target === "windows" || multi);
   const folderOption = $("save").querySelector('[value="disk"]');
   folderOption.disabled = !canStream || target === "windows" || multi;
   folderOption.textContent = target === "windows" ? "Save to folder · unavailable for Windows (DLL restrictions)" : multi ? "Save to folder · unavailable for batch output" : "Save to folder · uncompressed";
-  const libraryBytes = release?.platforms[target]?.expandedBytes;
+  const libraryBytes = release ? (bundled ? release.platforms[target].expandedBytes : macos ? 0 : undefined) : undefined;
   const selectedBytes = inspected ? sum(summaries.map(summary => target === "windows" ? summary.windowsSelectedBytes : summary.selectedBytes)) : null;
   const conversionTooLarge = inspected && summaries.some(summary => (target === "windows" ? summary.windowsSelectedBytes : summary.selectedBytes) > 256 * 1024 * 1024);
   const iconTooLarge = target === "windows" && inspected && summaries.some(summary => summary.windowsIconTooLarge);
@@ -76,11 +88,11 @@ function update() {
   $("browser-note").textContent = !supported ? "This browser or connection does not support the converter. Use a current browser over HTTPS, or use the native relinker." : folderBlocked && multi ? "Batch conversion creates one ZIP bundle. Choose Save ZIP to disk or Download in memory." : folderBlocked ? "Browsers block direct DLL creation. Windows output requires ZIP. Choose Save ZIP to disk or Download in memory." : iconTooLarge ? "A Windows icon exceeds 16 MiB. Choose Linux or use the native relinker." : conversionTooLarge ? `A ${target} conversion input exceeds 256 MiB. Use the native relinker for that app.` : estimateOverflow ? "The combined output exceeds the browser's supported size range. Choose Save ZIP to disk." : memoryBlocked ? "This output exceeds the memory-download limit. Choose Save ZIP to disk. If that option is unavailable, open this page in desktop Chrome or Edge." : "Some direct disk saving options are unavailable in this browser or context. Small apps can still be downloaded in memory. For larger apps, use desktop Chrome or Edge over HTTPS.";
   const hasWarnings = inspected && summaries.some(summary => summary.warnings.length > 0);
   $("convert").disabled = !supported || working || !inspected || !release || conversionBlocked || memoryBlocked || folderBlocked || (hasWarnings && !$("acknowledge").checked);
-  $("ready-note").textContent = inspected ? (folderBlocked && multi ? "Choose a ZIP save mode for the app bundle." : folderBlocked ? "Choose a ZIP save mode for Windows." : iconTooLarge ? "A Windows icon exceeds 16 MiB. Choose Linux or use the native relinker." : conversionTooLarge ? `A ${target} conversion input exceeds 256 MiB. Use the native relinker for that app.` : memoryBlocked ? "A direct disk save is required for this output." : release ? `Libraries: ${release.tag} · ${multi ? "ZIP bundle" : $("save").value === "disk" ? "Uncompressed folder" : "ZIP compression level 9"}` : "Loading release information…") : "Choose one folder or one or more ZIP files to get started.";
+  $("ready-note").textContent = inspected ? (folderBlocked && multi ? "Choose a ZIP save mode for the app bundle." : folderBlocked ? "Choose a ZIP save mode for Windows." : iconTooLarge ? "A Windows icon exceeds 16 MiB. Choose Linux or use the native relinker." : conversionTooLarge ? `A ${target} conversion input exceeds 256 MiB. Use the native relinker for that app.` : memoryBlocked ? "A direct disk save is required for this output." : release ? `Libraries: ${bundled ? release.tag : "not published for macOS yet"} · ${multi ? "ZIP bundle" : $("save").value === "disk" ? "Uncompressed folder" : "ZIP compression level 9"}` : "Loading release information…") : "Choose one folder or one or more ZIP files to get started.";
 }
 
 function lock(value) {
-  for (const id of ["choose", "choose-folder", "change", "target", "save", "intel"]) $(id).disabled = value || !supported || (id === "choose-folder" && !("webkitdirectory" in $("folder")));
+  for (const id of ["choose", "choose-folder", "change", "target", "save", "intel"]) $(id).disabled = value || !supported || (id === "choose-folder" && !("webkitdirectory" in $("folder"))) || (id === "intel" && selectedTarget() === "macos");
 }
 
 async function fail(message) {
@@ -201,7 +213,8 @@ async function onMessage({ data }) {
       $("done").hidden = false;
       $("status").hidden = true;
       $("cancel").hidden = true;
-      $("result-info").textContent = `${data.apps > 1 ? `${data.apps} apps · ` : ""}${bytes(data.size)} ${data.mode === "disk" ? "files" : "ZIP"} · ${data.release} system libraries · ${data.apps > 1 ? "combined app bundle" : data.outputName}`;
+      const target = selectedTarget();
+      $("result-info").textContent = `${data.apps > 1 ? `${data.apps} apps · ` : ""}${bytes(data.size)} ${data.mode === "disk" ? "files" : "ZIP"} · ${data.libraries ? `${data.release} system libraries` : "no system libraries"} · ${data.apps > 1 ? "combined app bundle" : data.outputName}`;
       if (data.blob) {
         downloadUrl = URL.createObjectURL(data.blob);
         $("download").href = downloadUrl;
@@ -211,10 +224,13 @@ async function onMessage({ data }) {
         $("result-info").textContent += " · ZIP saved to disk";
       } else {
         $("result-info").textContent += ` · Saved in ${outputTransaction.name}/`;
-        if (document.querySelector('input[name="target"]:checked').value === "linux") $("result-info").textContent += ` · On Linux, run chmod +x "${data.outputName}" before launching.`;
+        if (target === "linux") $("result-info").textContent += ` · On Linux, run chmod +x "${data.outputName}" before launching.`;
+        if (target === "macos") $("result-info").textContent += ` · Run chmod +x "${data.outputName}" before launching.`;
       }
       $("result-note").textContent = data.apps > 1 ? "Extract the ZIP; each app is in its own folder with its executable, libs and app0 files. On Linux, run chmod +x */*.elf before launching." : "Extract the entire ZIP before launching the executable.";
       $("result-note").hidden = data.mode === "disk";
+      $("macos-note").hidden = target !== "macos";
+      $("macos-libraries").hidden = target !== "macos" || data.libraries;
       outputDirectory = null;
       outputTransaction?.commit();
       outputTransaction = null;
@@ -263,8 +279,9 @@ $("choose").onclick = () => { $("file").value = ""; $("file").click(); };
 $("change").onclick = () => {
   if (working) return;
   if (downloadUrl) { URL.revokeObjectURL(downloadUrl); downloadUrl = null; }
-  file = null;
-  summary = null;
+  selectedInputs = [];
+  summaries = [];
+  inspectionComplete = false;
   $("file").value = "";
   $("folder").value = "";
   for (const id of ["selection", "warnings", "error", "done", "download"]) $(id).hidden = true;
@@ -298,7 +315,7 @@ $("convert").onclick = async () => {
   lock(true);
   update();
   try {
-    const target = document.querySelector('input[name="target"]:checked').value;
+    const target = selectedTarget();
     if ($("save").value === "zip") {
       const name = selectedInputs.length > 1 ? `anyps5-${target}-apps.zip` : `${selectedInputs[0].name.replace(/\.zip$/iu, "")}-${target}.zip`;
       const handle = await window.showSaveFilePicker({ suggestedName: name, types: [{ description: "ZIP archive", accept: { "application/zip": [".zip"] } }] });
@@ -326,6 +343,7 @@ update();
 lock(false);
 if (supported) fetch("./release.json", { cache: "no-cache" }).then(response => { if (!response.ok) throw new Error(`Cannot load release information (${response.status})`); return response.json(); }).then(value => {
   if (!value.tag || !["windows", "linux"].every(target => Number.isSafeInteger(value.platforms?.[target]?.expandedBytes))) throw new Error("Invalid release information");
+  if (value.platforms.macos !== undefined && !Number.isSafeInteger(value.platforms.macos.expandedBytes)) throw new Error("Invalid release information");
   release = value;
   update();
 }).catch(error => fail(error.message));

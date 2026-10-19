@@ -34,7 +34,7 @@ const folder = [
   { path: "title/content/resource.bin", file: new Blob([resource]) }
 ];
 for (const [kind, selected] of [["ZIP", source], ["folder", folder]]) {
-for (const target of ["windows", "linux"]) {
+for (const target of ["windows", "linux", "macos"]) {
   const archive = new Archive(selected);
   const summary = await archive.inspect(() => {});
   assert.equal(summary.name, "program.dat");
@@ -45,16 +45,24 @@ for (const target of ["windows", "linux"]) {
   assert.equal(input.modules.length, 1);
   assert.deepEqual(input.executable, executable);
   assert.equal(input.modules[0].name, "sce_module/library.prx.esbak");
+  assert.equal(input.outputName, { windows: "program.exe", linux: "program.elf", macos: "program" }[target]);
   const events = [];
   const converted = native.Convert(input, event => events.push(event));
   assert.equal(converted.ok, true, converted.error);
-  assert.equal(converted.executable[0], target === "windows" ? 77 : 127);
+  assert.equal(converted.executable[0], { windows: 77, linux: 127, macos: 0xcf }[target]);
+  if (target === "macos") {
+    const image = new DataView(converted.executable.buffer, converted.executable.byteOffset, converted.executable.byteLength);
+    assert.equal(image.getUint32(0, true), 0xfeedfacf);
+    assert.equal(image.getUint32(4, true), 0x01000007);
+    assert(events.some(event => event.message?.startsWith("System: macOS")));
+    assert(events.some(event => event.message?.startsWith("Intel conversion:")));
+  }
   if (target === "windows") {
     const image = new DataView(converted.executable.buffer, converted.executable.byteOffset, converted.executable.byteLength);
     assert.equal(image.getUint16(image.getUint32(60, true) + 24 + 68, true), 3);
   }
   assert(events.some(event => event.stage === 6 && event.completed > 0));
-  const libraries = await zip([["libs/system.prx", new Uint8Array([1, 2, 3])]]);
+  const libraries = target === "macos" ? null : await zip([["libs/system.prx", new Uint8Array([1, 2, 3])]]);
   const chunks = [];
   let maxChunk = 0;
   const destination = new WritableStream({ async write(chunk) {
@@ -68,7 +76,7 @@ for (const target of ["windows", "linux"]) {
   const entries = await reader.getEntries();
   const byName = new Map(entries.map(entry => [entry.filename, entry]));
   assert(byName.has(input.outputName));
-  assert(byName.has("libs/system.prx"));
+  assert.equal(byName.has("libs/system.prx"), target !== "macos");
   assert.deepEqual(await byName.get("app0/shaders/example.frag").getData(new Uint8ArrayWriter(), { checkSignature: true }), executable);
   assert.deepEqual(await byName.get("app0/sce_module/library.prx.esbak.guest.prx").getData(new Uint8ArrayWriter(), { checkSignature: true }), converted.modules[0].bytes);
   assert.deepEqual(await byName.get("app0/sce_module/library.prx").getData(new Uint8ArrayWriter(), { checkSignature: true }), new Uint8Array([79, 21, 61, 29]));
@@ -131,8 +139,23 @@ assert(bundleNames.has(`02-second/${bundleInput.outputName}`));
 assert(bundleNames.has("02-second/libs/system.prx"));
 assert(bundleNames.has("02-second/app0/content/resource.bin"));
 await bundleReader.close();
-await bundleArchive.close();
 console.log("Multiple app packages append under separate roots in a single ZIP");
+
+const macBundleInput = await bundleArchive.conversionInput("macos", true, () => {});
+const macBundleConversion = native.Convert(macBundleInput, () => {});
+assert.equal(macBundleConversion.ok, true, macBundleConversion.error);
+const macBundleWriter = new ZipWriter(new BlobWriter("application/zip"), { zip64: true, level: 9, useWebWorkers: false, useCompressionStream: false });
+await packageArchive(bundleArchive, macBundleConversion, macBundleInput.outputName, null, null, () => {}, false, { prefix: "01-first/", writer: macBundleWriter });
+await packageArchive(bundleArchive, macBundleConversion, macBundleInput.outputName, null, null, () => {}, false, { prefix: "02-second/", writer: macBundleWriter });
+const macBundleReader = new ZipReader(new BlobReader(await macBundleWriter.close()));
+const macBundleNames = new Set((await macBundleReader.getEntries()).map(entry => entry.filename));
+assert(macBundleNames.has(`01-first/${macBundleInput.outputName}`));
+assert(macBundleNames.has(`02-second/${macBundleInput.outputName}`));
+assert(macBundleNames.has("01-first/app0/content/resource.bin"));
+assert(![...macBundleNames].some(name => name.includes("/libs/")));
+await macBundleReader.close();
+await bundleArchive.close();
+console.log("macOS app packages append without unpublished system libraries");
 
 for (const [entries, error] of [
   [[["one", executable], ["two", executable]], /exactly one/u],

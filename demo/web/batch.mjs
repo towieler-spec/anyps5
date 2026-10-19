@@ -10,7 +10,7 @@ export function memoryEstimate(archiveBytes, selectedBytes, libraryBytes, entrie
 }
 
 export function batchMemoryEstimate(summaries, target, libraryBytes) {
-  if (target !== "linux" && target !== "windows") throw new Error(`Unsupported conversion target: ${target}`);
+  if (target !== "linux" && target !== "windows" && target !== "macos") throw new Error(`Unsupported conversion target: ${target}`);
   return summaries.reduce((total, summary) => safeSize(total + memoryEstimate(
     summary.totalBytes,
     target === "windows" ? summary.windowsSelectedBytes : summary.selectedBytes,

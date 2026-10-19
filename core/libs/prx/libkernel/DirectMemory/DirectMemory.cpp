@@ -30,6 +30,15 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#elif defined(__APPLE__)
+#include <atomic>
+#include <fcntl.h>
+#include "prx/libc/include/specifics/linux/ElfTypes.hpp"
+#include <mach/mach.h>
+#include <mach/mach_vm.h>
+#include <string>
+#include <sys/mman.h>
+#include <unistd.h>
 #else
 #include <windows.h>
 #include "prx/libc/include/WindowsDescriptor.hpp"
@@ -176,7 +185,19 @@ static int mprotect(void* addr, size_t len, int prot) {
 }
 #endif
 
-#if defined(__linux__)
+#if defined(__linux__) || defined(__APPLE__)
+static void* MapAnonymousExactly(void* address, std::size_t bytes) {
+#ifdef __APPLE__
+    void* mapped = ::mmap(address, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (mapped == MAP_FAILED || mapped == address) return mapped;
+    ::munmap(mapped, bytes);
+    errno = EEXIST;
+    return MAP_FAILED;
+#else
+    return ::mmap(address, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE | MAP_NORESERVE, -1, 0);
+#endif
+}
+
 static void MapUnmappedPages(void* addr, size_t len) {
     constexpr std::uintptr_t hostPage = 0x1000;
     auto cursor = reinterpret_cast<std::uintptr_t>(addr);
@@ -191,7 +212,7 @@ static void MapUnmappedPages(void* addr, size_t len) {
             continue;
         }
         void* mapped = MAP_FAILED;
-        while ((mapped = ::mmap(run, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE | MAP_NORESERVE, -1, 0)) == MAP_FAILED && errno == EEXIST && bytes > hostPage) bytes = half(bytes);
+        while ((mapped = MapAnonymousExactly(run, bytes)) == MAP_FAILED && errno == EEXIST && bytes > hostPage) bytes = half(bytes);
         if (mapped != run) {
             const int error = mapped == MAP_FAILED ? errno : EEXIST;
             if (mapped != MAP_FAILED) ::munmap(mapped, bytes);
@@ -233,6 +254,31 @@ void* MapAtOrAbove(std::uintptr_t start, size_t len, int prot, size_t alignment)
         if (errno != EEXIST) throw std::system_error(errno, std::generic_category(), "Hinted mmap failed");
     }
     throw std::runtime_error("Hinted mmap kept racing with other mappings");
+}
+#elif defined(__APPLE__)
+void* MapAtOrAbove(std::uintptr_t start, size_t len, int prot, size_t alignment) {
+    auto address = static_cast<mach_vm_address_t>(start);
+    const auto result = mach_vm_map(mach_task_self(), &address, len, alignment - 1, VM_FLAGS_ANYWHERE, MEMORY_OBJECT_NULL, 0, FALSE, prot, VM_PROT_ALL, VM_INHERIT_DEFAULT);
+    if (result != KERN_SUCCESS) throw std::runtime_error(std::string("Hinted mach_vm_map failed: ") + mach_error_string(result));
+    if (address < start) {
+        mach_vm_deallocate(mach_task_self(), address, len);
+        throw std::runtime_error("No free range above the mapping address hint");
+    }
+    return reinterpret_cast<void*>(address);
+}
+
+void* MapFixedNoReplace(void* addr, size_t len, int prot) {
+    auto address = reinterpret_cast<mach_vm_address_t>(addr);
+    const auto result = mach_vm_map(mach_task_self(), &address, len, 0, VM_FLAGS_FIXED, MEMORY_OBJECT_NULL, 0, FALSE, prot, VM_PROT_ALL, VM_INHERIT_DEFAULT);
+    if (result == KERN_NO_SPACE) {
+        errno = EEXIST;
+        return MAP_FAILED;
+    }
+    if (result != KERN_SUCCESS) {
+        errno = ENOMEM;
+        return MAP_FAILED;
+    }
+    return reinterpret_cast<void*>(address);
 }
 #endif
 
@@ -339,6 +385,11 @@ public:
             std::snprintf(message, sizeof(message), "create direct memory backing of 0x%llx bytes (%llu MiB)", static_cast<unsigned long long>(size), static_cast<unsigned long long>((size + 0xFFFFF) >> 20));
             throw std::system_error(error, std::system_category(), message);
         }
+#elif defined(__APPLE__)
+        static_cast<void>(start);
+        memory_object_size_t size = bytes;
+        const auto result = mach_make_memory_entry_64(mach_task_self(), &size, 0, MAP_MEM_NAMED_CREATE | VM_PROT_ALL, &entry, MACH_PORT_NULL);
+        if (result != KERN_SUCCESS) throw std::runtime_error(std::string("create direct memory backing: ") + mach_error_string(result));
 #else
         file = PhysicalFile();
         fileOffset = start;
@@ -366,6 +417,8 @@ public:
 #ifdef _WIN32
         GuestArena::GuestArenaForgetSection_nid_postfix(section);
         CloseHandle(section);
+#elif defined(__APPLE__)
+        mach_port_deallocate(mach_task_self(), entry);
 #else
         if (hostWriteView != nullptr) ::munmap(hostWriteView, bytes);
 #endif
@@ -377,6 +430,10 @@ public:
     void Map(std::uintptr_t address, std::size_t bytes, std::uint64_t offset, int protection) const {
 #ifdef _WIN32
         GuestArena::GuestArenaMapDirect_nid_postfix(reinterpret_cast<void*>(address), bytes, section, offset, WinProtFromPosix(protection));
+#elif defined(__APPLE__)
+        auto target = static_cast<mach_vm_address_t>(address);
+        const auto result = mach_vm_map(mach_task_self(), &target, bytes, 0, VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE, entry, offset, FALSE, protection, VM_PROT_ALL, VM_INHERIT_SHARE);
+        if (result != KERN_SUCCESS) throw std::runtime_error(std::string("map direct memory backing: ") + mach_error_string(result));
 #else
         if (::mmap(reinterpret_cast<void*>(address), bytes, protection, MAP_SHARED | MAP_FIXED, file, static_cast<off_t>(fileOffset + offset)) == MAP_FAILED) throw std::system_error(errno, std::generic_category(), "map direct memory backing");
 #endif
@@ -387,6 +444,8 @@ private:
     std::size_t bytes;
 #ifdef _WIN32
     HANDLE section = nullptr;
+#elif defined(__APPLE__)
+    mach_port_t entry = MACH_PORT_NULL;
 #else
     int file = -1;
     void* hostWriteView = nullptr;
@@ -547,7 +606,7 @@ void ValidatePhysicalRange(std::uint64_t phys, std::size_t len) {
     }
 }
 
-#if defined(__linux__)
+#if defined(__linux__) || defined(__APPLE__)
 void WatchMapping(std::uintptr_t address, std::size_t len) {
     GuestWriteWatch::GuestWriteWatchRegister_nid_postfix(reinterpret_cast<const void*>(address), len);
     const auto end = address + len;
@@ -640,7 +699,7 @@ void AddMapping(std::uintptr_t address, std::size_t len, std::uint64_t phys, int
         InsertMapping(address + offset, DirectMapping{address + offset + bytes, phys + offset, page.backing->MemoryType(), page.backing});
         offset += bytes;
     }
-#if defined(__linux__)
+#if defined(__linux__) || defined(__APPLE__)
     WatchMapping(address, len);
 #endif
 }
@@ -705,7 +764,7 @@ bool RemapFixedIntoRegistered(GuestAllocations::Mutation& mutation, void* addr, 
     return true;
 }
 
-#if defined(__linux__)
+#if defined(__linux__) || defined(__APPLE__)
 bool ArenaAvailable() { return GuestArena::GuestArenaAvailable_nid_postfix(); }
 
 void* ArenaCommit(void* addr, size_t len, int prot) {
@@ -718,7 +777,7 @@ void ArenaForget(void* addr, size_t len) {
 #endif
 
 void Unmap(void* addr, size_t len) {
-#if defined(__linux__)
+#if defined(__linux__) || defined(__APPLE__)
     if (ArenaAvailable() && GuestArena::GuestArenaContains_nid_postfix(addr, len))
         GuestArena::GuestArenaReset_nid_postfix(addr, len);
     else if (munmap(addr, len) != 0) throw std::system_error(errno, std::generic_category(), "munmap failed");
@@ -770,7 +829,7 @@ void* MapPlaced(void* addr, size_t len, int prot, int flags, size_t alignment) {
             }
         }
 #endif
-#if defined(__linux__)
+#if defined(__linux__) || defined(__APPLE__)
         if (ArenaAvailable() && !GuestArena::GuestArenaContains_nid_postfix(addr, len))
             throw std::invalid_argument("fixed mapping is outside the guest address space arena");
         if (ArenaAvailable()) {
@@ -779,11 +838,15 @@ void* MapPlaced(void* addr, size_t len, int prot, int flags, size_t alignment) {
             GuestArena::GuestArenaRelease_nid_postfix(addr, len);
             throw std::system_error(errno, std::generic_category(), "Arena mapping failed");
         }
-        const int placement = (flags & GuestMapNoOverwrite) != 0 ? MAP_FIXED_NOREPLACE : MAP_FIXED;
-#else
-        const int placement = MAP_FIXED;
 #endif
+#if defined(__linux__)
+        const int placement = (flags & GuestMapNoOverwrite) != 0 ? MAP_FIXED_NOREPLACE : MAP_FIXED;
         void* result = mmap(addr, len, prot, MAP_PRIVATE | MAP_ANONYMOUS | placement, -1, 0);
+#elif defined(__APPLE__)
+        void* result = (flags & GuestMapNoOverwrite) != 0 ? MapFixedNoReplace(addr, len, prot) : mmap(addr, len, prot, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+#else
+        void* result = mmap(addr, len, prot, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+#endif
         if (result == MAP_FAILED) {
             // return SCE_KERNEL_ERROR_ENOMEM;
             throw std::system_error(errno, std::generic_category(), "Fixed mmap failed");
@@ -791,7 +854,7 @@ void* MapPlaced(void* addr, size_t len, int prot, int flags, size_t alignment) {
         return result;
     }
     if (addr) {
-#if defined(__linux__)
+#if defined(__linux__) || defined(__APPLE__)
         if (ArenaAvailable()) {
             void* placed = GuestArena::GuestArenaAllocateFromHint_nid_postfix(
                 reinterpret_cast<std::uintptr_t>(addr), len, alignment);
@@ -807,7 +870,7 @@ void* MapPlaced(void* addr, size_t len, int prot, int flags, size_t alignment) {
 #ifdef _WIN32
     return mmap_aligned(len, prot, alignment);
 #endif
-#if defined(__linux__)
+#if defined(__linux__) || defined(__APPLE__)
     if (ArenaAvailable()) {
         void* placed = GuestArena::GuestArenaAllocate_nid_postfix(len, alignment);
         if (void* committed = ArenaCommit(placed, len, prot); committed != MAP_FAILED) return committed;
@@ -891,7 +954,7 @@ void RecordProtection(const void* addr, size_t len, int prot) {
 
 void* MapAligned(void* addr, size_t len, int prot, int flags, size_t alignment) {
     void* mapped = MapPlaced(addr, len, prot, flags, alignment);
-#if defined(__linux__)
+#if defined(__linux__) || defined(__APPLE__)
     GuestWriteWatch::GuestWriteWatchRegister_nid_postfix(mapped, len);
 #endif
     return mapped;
@@ -926,7 +989,7 @@ void UnmapRegistered(GuestAllocations::Mutation& mutation, void* addr, size_t le
         auto* pieceAddress = const_cast<void*>(piece);
         std::lock_guard lock(g_directLock);
         EraseMappings(reinterpret_cast<std::uintptr_t>(piece), reinterpret_cast<std::uintptr_t>(piece) + pieceBytes);
-#if defined(__linux__)
+#if defined(__linux__) || defined(__APPLE__)
         Unmap(pieceAddress, pieceBytes);
 #else
         if (KernelArena::Get().Contains(pieceAddress, pieceBytes)) munmap(pieceAddress, pieceBytes);
@@ -1069,7 +1132,7 @@ int DoMapAnon(void** addr, size_t len, int prot, int flags, size_t alignment, bo
 int DoMapFileBacked_nid_no_patch(void** addr, size_t len, int prot, int flags, int descriptor, std::uint64_t offset, size_t alignment) {
     ValidateOutput(addr);
     if (len == 0 || (len & (PS5_PAGE_SIZE - 1)) != 0 || (offset & (PS5_PAGE_SIZE - 1)) != 0 || len > static_cast<std::size_t>(std::numeric_limits<std::int64_t>::max()) || offset > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) - len) return SCE_KERNEL_ERROR_EINVAL;
-#if defined(__linux__)
+#if defined(__linux__) || defined(__APPLE__)
     const bool shared = (flags & 3) == 1;
     GuestAllocations::Mutation mutation;
     const int placementFlags = flags & (GuestMapFixedFlag | 0x80 | 0x400000);
@@ -1096,7 +1159,7 @@ int DoMapFileBacked_nid_no_patch(void** addr, size_t len, int prot, int flags, i
     RecordProtection(mapped, len, prot);
     Trace("map file %p+0x%zx offset=0x%llx prot=0x%x flags=0x%x", mapped, len, static_cast<unsigned long long>(offset), prot, flags);
     return 0;
-#else
+#elif defined(_WIN32)
     if ((flags & 3) != 1) throw std::system_error(ENOTSUP, std::generic_category(), "map file: a private file mapping is not mapped from the file on Windows");
     if ((prot & PROT_EXEC) != 0) throw std::system_error(ENOTSUP, std::generic_category(), "map file: an executable shared file mapping is not implemented on Windows");
     const HANDLE file = WindowsDescriptorHandle_nid_no_patch(descriptor);
@@ -1138,6 +1201,12 @@ int DoMapFileBacked_nid_no_patch(void** addr, size_t len, int prot, int flags, i
     RecordProtection(mapped, len, prot);
     Trace("map file %p+0x%zx offset=0x%llx prot=0x%x flags=0x%x", mapped, len, static_cast<unsigned long long>(offset), prot, flags);
     return 0;
+#else
+    static_cast<void>(prot);
+    static_cast<void>(flags);
+    static_cast<void>(descriptor);
+    static_cast<void>(offset);
+    throw std::system_error(ENOTSUP, std::generic_category(), "file-backed guest mmap is not supported on this host");
 #endif
 }
 
@@ -1150,6 +1219,10 @@ int DoMapShared(void** addr, size_t len, int prot, HostSharedMemory object) {
     try {
 #ifdef _WIN32
         GuestArena::GuestArenaMap_nid_postfix(mapped, len, object, 0, WinProtFromPosix(nativeProtection));
+#elif defined(__APPLE__)
+        const bool writableCode = (nativeProtection & PROT_WRITE) != 0 && (nativeProtection & PROT_EXEC) != 0;
+        if (::mmap(mapped, len, writableCode ? nativeProtection & ~PROT_EXEC : nativeProtection, MAP_SHARED | MAP_FIXED, object, 0) == MAP_FAILED) throw std::system_error(errno, std::generic_category(), "map shared memory");
+        if (writableCode && ::mprotect(mapped, len, nativeProtection) != 0) throw std::system_error(errno, std::generic_category(), "make shared memory executable");
 #else
         if (::mmap(mapped, len, nativeProtection, MAP_SHARED | MAP_FIXED, object, 0) == MAP_FAILED) throw std::system_error(errno, std::generic_category(), "map shared memory");
 #endif
@@ -1192,7 +1265,7 @@ static bool IsGuestModuleImage(const void* base) {
     }
     return false;
 }
-#else
+#elif !defined(__APPLE__)
 struct GuestImageSearch {
     std::uintptr_t address = 0;
     std::uintptr_t base = 0;
@@ -1229,10 +1302,13 @@ int DoMprotect(const void* addr, size_t len, int prot) {
     constexpr auto pageMask = static_cast<std::uintptr_t>(PS5_PAGE_SIZE - 1);
     const auto limit = std::numeric_limits<std::uintptr_t>::max();
     if (address == 0 || len == 0 || len > limit - address || address + len > limit - pageMask) throw std::invalid_argument("Invalid guest memory protection range");
-    const auto first = address & ~pageMask;
-    const auto end = (address + len + pageMask) & ~pageMask;
-    const auto bytes = static_cast<std::size_t>(end - first);
-    const auto* pointer = reinterpret_cast<const void*>(first);
+    auto first = address & ~pageMask;
+    auto end = (address + len + pageMask) & ~pageMask;
+#ifdef __APPLE__
+    GuestAllocations::GuestAllocationsGuestPages_nid_postfix(address, len, PS5_PAGE_SIZE, &first, &end);
+#endif
+    auto bytes = static_cast<std::size_t>(end - first);
+    const void* pointer = reinterpret_cast<const void*>(first);
     const auto nativeProtection = LinuxProtFromSce(prot);
     if (GuestThreadStackHostRangeOverlaps(address, address + len))
         throw std::system_error(EACCES, std::generic_category(), "mprotect overlaps host-only guest thread stack pages");
@@ -1293,20 +1369,27 @@ int DoMprotect(const void* addr, size_t len, int prot) {
     }
 #else
     mutation.RegisterMainImage();
+#ifndef __APPLE__
     GuestImageSearch image{.address = address, .pageSize = static_cast<std::uintptr_t>(::sysconf(_SC_PAGESIZE))};
     dl_iterate_phdr(FindImageContaining, &image);
     if (image.found && !image.main) {
         if (!image.guestModule) throw std::invalid_argument("Memory protection of a foreign image is not supported");
         mutation.RegisterImage(reinterpret_cast<const void*>(image.base));
     }
+    mutation.TrimToRegistered(pointer, bytes);
+#endif
+    mutation.TrimToRegistered(pointer, bytes);
 #endif
     std::vector<std::pair<const void*, std::size_t>> spans;
     mutation.ForRegistered(pointer, bytes, [&](const void* span, std::size_t spanBytes) { spans.emplace_back(span, spanBytes); });
-    if (spans.empty() || reinterpret_cast<std::uintptr_t>(spans.front().first) != first) return SCE_KERNEL_ERROR_EINVAL;
+    if (spans.empty() || spans.front().first != pointer) return SCE_KERNEL_ERROR_EINVAL;
     for (const auto& [span, spanBytes] : spans) mutation.RequireUnpinned(span, spanBytes);
     for (const auto& [span, spanBytes] : spans) {
         mutation.Protect(span, spanBytes, (prot & 3) != 0, (prot & 2) != 0, (prot & GuestProtGpuReadWrite) != 0, [&] {
             if (mprotect(const_cast<void*>(span), spanBytes, nativeProtection) != 0) throw std::system_error(errno, std::generic_category(), "mprotect failed");
+#ifdef __APPLE__
+            GuestWriteWatch::GuestWriteWatchProtectionChanged_nid_postfix(span, spanBytes, nativeProtection);
+#endif
         });
         RecordProtection(span, spanBytes, prot);
     }

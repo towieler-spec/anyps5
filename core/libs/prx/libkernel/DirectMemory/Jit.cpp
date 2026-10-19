@@ -2,6 +2,8 @@
 #include "prx/libc/include/GuestArena.hpp"
 #include "prx/libkernel/DirectMemory/DirectMemory.hpp"
 
+#include <cstdlib>
+#include <string>
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
@@ -66,6 +68,9 @@ public:
         GuestArena::GuestArenaForgetSection_nid_postfix(section);
         CloseHandle(section);
     }
+#elif defined(__APPLE__)
+    JitObject(std::size_t bytes, std::string path) : bytes(bytes), path(std::move(path)) {}
+    ~JitObject() { ::unlink(path.c_str()); }
 #else
     explicit JitObject(std::size_t bytes) : bytes(bytes) {}
 #endif
@@ -87,6 +92,8 @@ private:
     std::size_t bytes;
 #ifdef _WIN32
     HANDLE section;
+#elif defined(__APPLE__)
+    std::string path;
 #endif
 };
 
@@ -140,16 +147,35 @@ int DuplicateDescriptor(int descriptor) {
 }
 #else
 int CreateBacking(std::size_t bytes, int* descriptor, std::shared_ptr<JitObject>* object) {
+#ifdef __APPLE__
+    const char* directory = std::getenv("TMPDIR");
+    std::string pattern = std::string(directory && *directory ? directory : "/tmp") + "/aps5-jit-XXXXXX";
+    const int file = ::mkstemp(pattern.data());
+    if (file >= 0 && ::fcntl(file, F_SETFD, FD_CLOEXEC) != 0) {
+        const int error = errno;
+        ::unlink(pattern.c_str());
+        ::close(file);
+        return HostFailure("prepare JIT shared memory", error);
+    }
+#else
     const int file = memfd_create("anyps5 jit shared memory", MFD_CLOEXEC);
+#endif
     if (file < 0) return HostFailure("create JIT shared memory", errno);
     const bool representable = bytes <= static_cast<std::uint64_t>(std::numeric_limits<off_t>::max());
     if (!representable || ftruncate(file, static_cast<off_t>(bytes)) != 0) {
         const int error = !representable || errno == EFBIG ? ENOMEM : errno;
+#ifdef __APPLE__
+        ::unlink(pattern.c_str());
+#endif
         ::close(file);
         return HostFailure("size JIT shared memory", error);
     }
     *descriptor = file;
+#ifdef __APPLE__
+    *object = std::make_shared<JitObject>(bytes, std::move(pattern));
+#else
     *object = std::make_shared<JitObject>(bytes);
+#endif
     return 0;
 }
 

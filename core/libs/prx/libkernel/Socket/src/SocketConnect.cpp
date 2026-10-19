@@ -44,4 +44,65 @@ extern "C" void RefuseClosedLoopbackAtOnce_nid_no_patch(SOCKET socket, const soc
     DWORD returned = 0;
     WSAIoctl(socket, SIO_TCP_INITIAL_RTO, &parameters, sizeof(parameters), nullptr, 0, &returned, nullptr, nullptr);
 }
+#elif defined(__APPLE__)
+#include "prx/libkernel/Socket/include/SocketConnect.hpp"
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <algorithm>
+#include <cerrno>
+#include <chrono>
+#include <thread>
+
+namespace {
+
+bool IsLoopback(const sockaddr* address) {
+    if (address->sa_family == AF_INET) return (ntohl(reinterpret_cast<const sockaddr_in*>(address)->sin_addr.s_addr) >> 24) == 127;
+    if (address->sa_family == AF_INET6) return IN6_IS_ADDR_LOOPBACK(&reinterpret_cast<const sockaddr_in6*>(address)->sin6_addr);
+    return false;
+}
+
+bool ReplaceResetSocket(int descriptor, int domain) {
+    const int fresh = ::socket(domain, SOCK_STREAM, 0);
+    if (fresh < 0) return false;
+    static constexpr int Options[][2] = {{SOL_SOCKET, SO_REUSEADDR}, {SOL_SOCKET, SO_REUSEPORT}, {SOL_SOCKET, SO_KEEPALIVE}, {SOL_SOCKET, SO_OOBINLINE},
+        {SOL_SOCKET, SO_SNDBUF}, {SOL_SOCKET, SO_RCVBUF}, {SOL_SOCKET, SO_SNDLOWAT}, {SOL_SOCKET, SO_RCVLOWAT}, {SOL_SOCKET, SO_NOSIGPIPE}, {IPPROTO_TCP, TCP_NODELAY}};
+    for (const auto& option : Options) {
+        int value = 0;
+        socklen_t size = sizeof(value);
+        if (::getsockopt(descriptor, option[0], option[1], &value, &size) == 0) ::setsockopt(fresh, option[0], option[1], &value, size);
+    }
+    linger lingering{};
+    socklen_t lingerSize = sizeof(lingering);
+    if (::getsockopt(descriptor, SOL_SOCKET, SO_LINGER, &lingering, &lingerSize) == 0) ::setsockopt(fresh, SOL_SOCKET, SO_LINGER, &lingering, lingerSize);
+    const int statusFlags = ::fcntl(descriptor, F_GETFL);
+    const int descriptorFlags = ::fcntl(descriptor, F_GETFD);
+    const bool replaced = ::dup2(fresh, descriptor) == descriptor;
+    ::close(fresh);
+    if (!replaced) return false;
+    if (statusFlags >= 0) ::fcntl(descriptor, F_SETFL, statusFlags);
+    if (descriptorFlags >= 0) ::fcntl(descriptor, F_SETFD, descriptorFlags);
+    return true;
+}
+
+}
+
+extern "C" int ConnectRetryingLoopbackReset_nid_no_patch(int descriptor, const sockaddr* address, socklen_t size, bool blockingStream) {
+    if (::connect(descriptor, address, size) == 0) return 0;
+    if (errno != ECONNRESET || !blockingStream || !IsLoopback(address)) return -1;
+    auto wait = std::chrono::milliseconds(25);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(75);
+    while (std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(wait);
+        wait = std::min(wait * 2, std::chrono::milliseconds(1000));
+        if (!ReplaceResetSocket(descriptor, address->sa_family)) {
+            errno = ECONNRESET;
+            return -1;
+        }
+        if (::connect(descriptor, address, size) == 0) return 0;
+        if (errno != ECONNRESET) return -1;
+    }
+    return -1;
+}
 #endif

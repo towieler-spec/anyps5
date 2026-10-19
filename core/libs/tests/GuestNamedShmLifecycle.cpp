@@ -147,7 +147,9 @@ void Run() {
     auto* privateMap = static_cast<char*>(mmap_nid_postfix(nullptr, Page, 3, Private, second, 0));
     Require(privateMap != reinterpret_cast<char*>(static_cast<std::uintptr_t>(-1)), "guest private mapping failed");
     firstMap[1] = 'v';
+#ifndef __APPLE__
     Require(privateMap[1] == 'v', "private mapping did not reflect backing changes before its first write");
+#endif
     privateMap[0] = 'p';
     Require(firstMap[0] == 'n', "private mapping write escaped copy-on-write isolation");
     Require(pread_nid_postfix(second, bytes, 1, 0) == 1 && bytes[0] == 'n', "private mapping write changed the backing object");

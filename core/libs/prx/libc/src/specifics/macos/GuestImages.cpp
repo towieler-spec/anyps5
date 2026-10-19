@@ -4,6 +4,7 @@
 #include <mach-o/dyld.h>
 #include <mach-o/getsect.h>
 #include <mach-o/loader.h>
+#include <atomic>
 #include <cstring>
 
 namespace {
@@ -13,9 +14,30 @@ constexpr std::size_t LoadBiasOffset = 0x08;
 constexpr std::size_t HeaderCountOffset = 0x58;
 constexpr std::size_t HeadersOffset = 0x60;
 
+std::atomic<unsigned long long> imagesAdded {0};
+std::atomic<unsigned long long> imagesRemoved {0};
+
+void OnImageAdded(const mach_header*, intptr_t) {
+    imagesAdded.fetch_add(1, std::memory_order_relaxed);
+}
+
+void OnImageRemoved(const mach_header*, intptr_t) {
+    imagesRemoved.fetch_add(1, std::memory_order_relaxed);
+}
+
+void TrackImages() {
+    static const bool tracked = [] {
+        _dyld_register_func_for_add_image(OnImageAdded);
+        _dyld_register_func_for_remove_image(OnImageRemoved);
+        return true;
+    }();
+    static_cast<void>(tracked);
+}
+
 }
 
 extern "C" int dl_iterate_phdr(int (*callback)(dl_phdr_info*, std::size_t, void*), void* data) {
+    TrackImages();
     for (std::uint32_t index = 0; index < _dyld_image_count(); ++index) {
         const auto* header = reinterpret_cast<const mach_header_64*>(_dyld_get_image_header(index));
         if (header == nullptr || header->magic != MH_MAGIC_64 || (header->flags & MH_DYLIB_IN_CACHE) != 0) continue;
@@ -34,6 +56,8 @@ extern "C" int dl_iterate_phdr(int (*callback)(dl_phdr_info*, std::size_t, void*
         info.dlpi_name = header->filetype == MH_EXECUTE ? "" : _dyld_get_image_name(index);
         info.dlpi_phdr = reinterpret_cast<const Elf64_Phdr*>(meta + HeadersOffset);
         info.dlpi_phnum = static_cast<std::uint16_t>(count);
+        info.dlpi_adds = imagesAdded.load(std::memory_order_relaxed);
+        info.dlpi_subs = imagesRemoved.load(std::memory_order_relaxed);
         if (const int result = callback(&info, sizeof(info), data); result != 0) return result;
     }
     return 0;

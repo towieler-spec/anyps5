@@ -20,6 +20,16 @@
 #include <windows.h>
 #include <psapi.h>
 #include <filesystem>
+#elif defined(__APPLE__)
+#include <dlfcn.h>
+#include <filesystem>
+#include <mach-o/dyld.h>
+#include <mutex>
+#include <system_error>
+#include <unordered_map>
+#include "prx/libc/include/specifics/linux/ElfTypes.hpp"
+#include "prx/libc/include/specifics/linux/ElfTypes.hpp"
+#include "prx/libc/include/specifics/macos/ExecutablePath.hpp"
 #else
 #include <dlfcn.h>
 #include <link.h>
@@ -72,6 +82,11 @@ std::uint64_t PageSpan(std::uint64_t address, std::uint64_t size) {
 }
 
 #ifndef _WIN32
+#ifdef __APPLE__
+constexpr std::uint32_t PF_R = 4;
+constexpr std::uint32_t PT_TLS = 7;
+#endif
+
 template<typename TInfo>
 struct ImageSearch {
     std::uintptr_t address;
@@ -109,19 +124,25 @@ EhFrame::Tables FrameTables(const dl_phdr_info& image, std::uintptr_t header) {
 
 std::string ImageName(const dl_phdr_info& image) {
     std::string path = image.dlpi_name ? image.dlpi_name : "";
+#ifdef __APPLE__
+    if (path.empty()) path = MacOsExecutablePath().string();
+#else
     if (path.empty()) {
         char executable[4096];
         const auto length = ::readlink("/proc/self/exe", executable, sizeof(executable) - 1);
         if (length < 0) throw std::runtime_error("sceKernelGetModuleInfoFromAddr: cannot resolve the executable path");
         path.assign(executable, static_cast<std::size_t>(length));
     }
+#endif
     return ModuleName(path.substr(path.find_last_of('/') + 1));
 }
 
 template<typename TInfo>
 void Fill(const dl_phdr_info& image, TInfo& info) {
     SetName(info, ImageName(image));
+#ifndef __APPLE__
     if constexpr (Extended<TInfo>) info.tls_index = ToU32(image.dlpi_tls_modid, "TLS module index");
+#endif
     for (std::uint16_t i = 0; i < image.dlpi_phnum; ++i) {
         const auto& header = image.dlpi_phdr[i];
         const std::uintptr_t address = image.dlpi_addr + header.p_vaddr;
@@ -142,12 +163,15 @@ void Fill(const dl_phdr_info& image, TInfo& info) {
                 info.eh_frame_hdr_size = ToU32(header.p_memsz, "eh_frame_hdr size");
                 info.eh_frame_addr = tables.frames;
                 info.eh_frame_size = ToU32(tables.framesSize + TerminatorSize, "eh_frame size");
-            } else if (header.p_type == PT_DYNAMIC) {
+            }
+#ifndef __APPLE__
+            else if (header.p_type == PT_DYNAMIC) {
                 for (const auto* entry = reinterpret_cast<const ElfW(Dyn)*>(address); entry->d_tag != DT_NULL; ++entry) {
                     if (entry->d_tag == DT_INIT) info.init_proc_addr = image.dlpi_addr + entry->d_un.d_ptr;
                     else if (entry->d_tag == DT_FINI) info.fini_proc_addr = image.dlpi_addr + entry->d_un.d_ptr;
                 }
             }
+#endif
         }
     }
     if constexpr (Extended<TInfo>) info.ref_count = 1;
@@ -162,6 +186,7 @@ int FindImage(dl_phdr_info* image, std::size_t, void* data) {
     return 1;
 }
 
+#ifndef __APPLE__
 int CollectGuestImage(dl_phdr_info* image, std::size_t, void* data) {
     const std::string_view name = image->dlpi_name ? image->dlpi_name : "";
     if (!name.empty() && !name.ends_with(".prx")) return 0;
@@ -180,13 +205,20 @@ std::vector<GuestImage> GuestImages() {
     std::vector<GuestImage> images;
     for (const auto address : addresses) {
         Dl_info symbol{};
+#ifdef __APPLE__
+        if (!dladdr(reinterpret_cast<const void*>(address), &symbol) || !symbol.dli_fbase)
+            throw std::runtime_error("sceKernelGetModuleList: no Mach-O header for a loaded image");
+        images.push_back({symbol.dli_fbase, address});
+#else
         link_map* native = nullptr;
         if (!dladdr1(reinterpret_cast<const void*>(address), &symbol, reinterpret_cast<void**>(&native), RTLD_DL_LINKMAP) || !native)
             throw std::runtime_error("sceKernelGetModuleList: no link map for a loaded image");
         images.push_back({native, address});
+#endif
     }
     return images;
 }
+#endif
 
 int AddGuestSegmentBytes(dl_phdr_info* image, std::size_t, void* data) {
     const std::string_view name = image->dlpi_name ? image->dlpi_name : "";
@@ -206,11 +238,19 @@ std::uint64_t GuestSegmentBytes() {
     return bytes;
 }
 
+#ifndef __APPLE__
 bool SystemImage(const GuestImage& image) {
+#ifdef __APPLE__
+    if (image.native == _dyld_get_image_header(0)) return false;
+    Dl_info symbol{};
+    const std::string_view path = dladdr(image.native, &symbol) && symbol.dli_fname ? symbol.dli_fname : "";
+#else
     const auto* name = static_cast<const link_map*>(image.native)->l_name;
     const std::string_view path = name ? name : "";
+#endif
     return !path.empty() && !path.ends_with(GuestModuleSuffix);
 }
+#endif
 #else
 bool SectionNamed(const IMAGE_SECTION_HEADER& section, const char* name) {
     return std::strncmp(reinterpret_cast<const char*>(section.Name), name, IMAGE_SIZEOF_SHORT_NAME) == 0;
@@ -356,6 +396,7 @@ bool SystemImage(const GuestImage& image) {
 }
 #endif
 
+#ifndef __APPLE__
 int FillModuleInfo(KernelModule handle, ModuleInfo* info, bool titleOnly) {
     if (!info) return SCE_KERNEL_ERROR_EFAULT;
     if (info->st_size != sizeof(ModuleInfo)) return SCE_KERNEL_ERROR_EINVAL;
@@ -386,6 +427,7 @@ int FillModuleList(KernelModule* handles, std::size_t count, std::size_t* actual
     *actual = images.size();
     return 0;
 }
+#endif
 
 }
 
@@ -398,6 +440,13 @@ int APS5_VABI sceKernelGetModuleInfoFromAddr(std::uint64_t address, int flags, M
     result.st_size = sizeof(ModuleInfoEx);
 #ifdef _WIN32
     if (!Fill(static_cast<std::uintptr_t>(address), result)) return SCE_KERNEL_ERROR_ESRCH;
+#elif defined(__APPLE__)
+    ImageSearch<ModuleInfoEx> search{static_cast<std::uintptr_t>(address), &result, false};
+    dl_iterate_phdr(FindImage<ModuleInfoEx>, &search);
+    if (!search.found) return SCE_KERNEL_ERROR_ESRCH;
+    Dl_info image{};
+    if (!dladdr(reinterpret_cast<const void*>(address), &image) || image.dli_fbase == nullptr) return SCE_KERNEL_ERROR_ESRCH;
+    result.id = ModuleIdForImage_nid_no_patch(image.dli_fbase);
 #else
     Dl_info symbol{};
     link_map* native = nullptr;
@@ -412,6 +461,47 @@ int APS5_VABI sceKernelGetModuleInfoFromAddr(std::uint64_t address, int flags, M
     return 0;
 }
 
+#ifdef __APPLE__
+int APS5_VABI sceKernelGetModuleList(KernelModule*, std::size_t, std::size_t*) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceKernelGetModuleInfo(KernelModule, ModuleInfo*) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+std::int32_t APS5_VABI sceKernelGetLibkernelTextLocation_nid_postfix(void** address, std::size_t* size) {
+    if (!address || !size) throw std::invalid_argument("sceKernelGetLibkernelTextLocation: null argument");
+    struct MainSearch {
+        ModuleInfo info{};
+        bool found = false;
+    } search;
+    dl_iterate_phdr([](dl_phdr_info* image, std::size_t, void* data) {
+        auto& found = *static_cast<MainSearch*>(data);
+        if (image->dlpi_name == nullptr || image->dlpi_name[0] != '\0') return 0;
+        Fill(*image, found.info);
+        found.found = true;
+        return 1;
+    }, &search);
+    if (!search.found || search.info.segment_count == 0)
+        throw std::runtime_error("sceKernelGetLibkernelTextLocation: the main program has no segments");
+    *address = reinterpret_cast<void*>(static_cast<std::uintptr_t>(search.info.segments[0].address));
+    *size = search.info.segments[0].size;
+    return 0;
+}
+
+std::int32_t APS5_VABI sceKernelInternalMemoryGetModuleSegmentInfo_nid_postfix(InternalSegmentInfo* result) {
+    if (!result) throw std::invalid_argument("sceKernelInternalMemoryGetModuleSegmentInfo: result is null");
+    void* address = nullptr;
+    std::size_t size = 0;
+    const auto status = sceKernelGetLibkernelTextLocation_nid_postfix(&address, &size);
+    if (status != 0) return status;
+    *result = {reinterpret_cast<std::uintptr_t>(address), size};
+    return 0;
+}
+#else
 int APS5_VABI sceKernelGetModuleList(KernelModule* handles, std::size_t count, std::size_t* actual) {
     return FillModuleList(handles, count, actual, false);
 }
@@ -456,6 +546,7 @@ std::int32_t APS5_VABI sceKernelInternalMemoryGetModuleSegmentInfo_nid_postfix(I
     *result = {reinterpret_cast<std::uintptr_t>(address), size};
     return 0;
 }
+#endif
 
 std::uint64_t GuestImageSegmentBytes_nid_no_patch() {
     return GuestSegmentBytes();

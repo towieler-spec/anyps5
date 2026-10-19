@@ -9,6 +9,7 @@ import urllib.request
 import zipfile
 
 ROOT = Path(__file__).resolve().parent.parent
+OPTIONAL_PLATFORMS = ("macos",)
 MAX_EXPANDED_BYTES = 512 * 1024 * 1024
 
 
@@ -37,9 +38,12 @@ def publish_libraries(output):
     manifest = {"tag": tag, "url": release["html_url"], "platforms": {}}
     destination = output / "libraries"
     destination.mkdir(exist_ok=True)
-    for platform in ("windows", "linux"):
+    for platform in ("windows", "linux", "macos"):
         name = f"prx-{platform}-{tag}.zip"
         matches = [asset for asset in release["assets"] if asset["name"] == name]
+        if platform in OPTIONAL_PLATFORMS and not matches:
+            print(f"No {name} in {tag}; the converter packages {platform} output without system libraries")
+            continue
         if len(matches) != 1:
             raise ValueError(f"Missing or ambiguous release asset: {name}")
         asset = matches[0]

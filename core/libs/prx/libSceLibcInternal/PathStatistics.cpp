@@ -8,6 +8,7 @@
 #include <windows.h>
 #include <io.h>
 #else
+#include <sys/stat.h>
 #include <unistd.h>
 #endif
 #ifdef __APPLE__

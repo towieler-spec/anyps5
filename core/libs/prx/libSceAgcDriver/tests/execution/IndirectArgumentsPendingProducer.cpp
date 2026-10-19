@@ -161,6 +161,8 @@ public:
     explicit ProducerSubmissionGate(AgcDriver::VulkanDevice& device) : device(device) {
 #ifdef _WIN32
         constexpr const char* libraryName = "vulkan-1.dll";
+#elif defined(__APPLE__)
+        constexpr const char* libraryName = "libvulkan.1.dylib";
 #else
         constexpr const char* libraryName = "libvulkan.so.1";
 #endif
@@ -336,6 +338,7 @@ int main(int argc, char** argv) {
     try {
         auto device = OpenVulkanTestDevice();
         if (!device) return VulkanTestSkipped;
+        const bool hostEventsUnavailable = device->DriverInfo().find("MoltenVK") != std::string::npos;
         device.reset();
 #ifdef _WIN32
         auto* block = static_cast<std::uint8_t*>(VirtualAlloc(nullptr, GuestBytes, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
@@ -347,6 +350,10 @@ int main(int argc, char** argv) {
         auto* slots = new (block) Slot[Variants.size()];
         for (std::size_t index = 0; index < Variants.size(); ++index) {
             if (argc > 1 && std::to_string(index) != argv[1]) continue;
+            if (hostEventsUnavailable && Variants[index].order == Order::ArgumentLabelInEarlierBatch) {
+                std::cout << Variants[index].name << ": skipped (MoltenVK does not support Vulkan events)\n";
+                continue;
+            }
             Run(slots[index], Variants[index]);
             std::cout << Variants[index].name << ": passed\n";
         }

@@ -79,3 +79,35 @@ void* NativeInitPrimaryException(void* object, std::type_info* type, void (*dest
 }
 }
 #endif
+
+#ifdef __APPLE__
+#include <exception>
+#include <new>
+#include <stdexcept>
+#include <typeinfo>
+
+namespace {
+template <typename TError>
+[[noreturn]] void ThrowThroughGuestRuntime(const TError& error) {
+    void* object = __cxa_allocate_exception_nid_postfix(sizeof(TError));
+    new (object) TError(error);
+    __cxa_throw_nid_postfix(object, const_cast<std::type_info*>(&typeid(TError)), [](void* exception) { static_cast<TError*>(exception)->~TError(); });
+}
+
+[[noreturn]] void ForwardHostTermination() {
+    if (const auto current = std::current_exception()) {
+        try {
+            std::rethrow_exception(current);
+        } catch (const std::runtime_error& error) {
+            ThrowThroughGuestRuntime(error);
+        } catch (const std::logic_error& error) {
+            ThrowThroughGuestRuntime(error);
+        } catch (...) {
+        }
+    }
+    LibcException::Terminate();
+}
+
+const bool hostTerminationForwarded = (std::set_terminate(ForwardHostTermination), true);
+}
+#endif

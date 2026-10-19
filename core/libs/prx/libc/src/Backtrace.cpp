@@ -7,7 +7,7 @@
 
 #include "prx/libc/include/General.hpp"
 
-#ifdef __linux__
+#if defined(__linux__) || defined(__APPLE__)
 #include <dlfcn.h>
 #include <execinfo.h>
 

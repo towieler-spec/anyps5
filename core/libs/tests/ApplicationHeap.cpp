@@ -14,7 +14,7 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
-#elif defined(__linux__)
+#elif defined(__linux__) || defined(__APPLE__)
 #include "prx/libc/include/specifics/linux/ElfTypes.hpp"
 #include <dlfcn.h>
 #include <sys/mman.h>
@@ -50,6 +50,16 @@ alignas(16) std::array<std::byte, 0x38> libc{};
 alignas(16) std::array<std::byte, 0x78> replacement{};
 #ifdef _WIN32
 [[gnu::section(".proctst"), gnu::used]] alignas(4) std::uint32_t processParameterMetadata[2]{};
+#elif defined(__APPLE__)
+struct MacProcessMetadata {
+    std::uint64_t version;
+    std::uint64_t bias;
+    std::byte reserved[0x48];
+    std::uint64_t count;
+    Elf64_Phdr headers[2];
+};
+static_assert(offsetof(MacProcessMetadata, headers) == 0x60);
+[[gnu::section("__APS5DATA,__meta"), gnu::used]] MacProcessMetadata processParameterMetadata{};
 #endif
 std::size_t lastSize = 0;
 std::size_t lastAlignment = 0;
@@ -91,6 +101,16 @@ void installProcessParameters() {
     target->Misc.VirtualSize = sizeof(processParameterMetadata);
     DWORD restored = 0;
     VirtualProtect(target, sizeof(*target), oldProtect, &restored);
+#elif defined(__APPLE__)
+    processParameterMetadata.version = 2;
+    processParameterMetadata.bias = 0;
+    processParameterMetadata.count = 2;
+    auto& load = processParameterMetadata.headers[0];
+    load.p_type = PT_LOAD;
+    load.p_vaddr = reinterpret_cast<std::uintptr_t>(process.data());
+    load.p_filesz = load.p_memsz = process.size();
+    processParameterMetadata.headers[1] = load;
+    processParameterMetadata.headers[1].p_type = 0x61000001;
 #elif defined(__linux__)
     bool installed = false;
     dl_iterate_phdr([](dl_phdr_info* image, std::size_t, void* data) {

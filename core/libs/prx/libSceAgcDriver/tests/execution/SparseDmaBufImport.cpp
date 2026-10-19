@@ -6,7 +6,7 @@
 #include "prx/libSceAgcDriver/Graphics/include/UnitShadow.hpp"
 #include "prx/libc/include/GuestAllocations.hpp"
 #include "VulkanTestDevice.hpp"
-#ifndef _WIN32
+#ifdef __linux__
 #include "prx/libc/include/GuestArena.hpp"
 #include "prx/libc/include/GuestWriteWatch.hpp"
 #include <fcntl.h>
@@ -23,7 +23,7 @@
 #include <mutex>
 #include <span>
 
-#ifdef _WIN32
+#ifndef __linux__
 int main() {
     std::printf("skipped, udmabuf imports are Linux only\n");
     return VulkanTestSkipped;

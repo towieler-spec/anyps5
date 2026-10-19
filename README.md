@@ -1,6 +1,6 @@
 # About
 
-Tool for automatic executables porting to Linux and Windows.
+Tool for automatic executables porting to Linux, Windows and macOS on Apple Silicon (x86-64 Mach-O through Rosetta 2).
 
 The relinker-only build runs on macOS, including Apple silicon.
 

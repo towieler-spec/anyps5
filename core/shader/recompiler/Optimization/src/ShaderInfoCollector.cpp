@@ -387,6 +387,7 @@ void CollectBuiltinInputs(const IrProgram& program, ShaderInfo& info) {
                 case StageInputKind::BaryCoordSmoothCenter:
                 case StageInputKind::BaryCoordSmoothSample:
                     AddInput(info, StageInputKind::BaryCoordSmooth, 0, 3, "gl_BaryCoordKHR");
+                    if (program.Metadata().barycentricBuiltinsUnnormalized) AddInput(info, StageInputKind::FragCoord, 0, 4, "gl_FragCoord");
                     if (kind == StageInputKind::BaryCoordSmoothSample && program.Metadata().pixelIteratesSamples) AddInput(info, StageInputKind::SampleId, 0, 1, "gl_SampleID");
                     break;
                 case StageInputKind::BaryCoordNoPerspective:

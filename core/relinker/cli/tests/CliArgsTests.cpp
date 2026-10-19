@@ -364,6 +364,7 @@ int main() {
         missingPositionals();
         windowsFixedBase();
         linuxFixedBase();
+        macosFixedBase();
         patchOptions();
         verifyMode();
         macosFixedBase();

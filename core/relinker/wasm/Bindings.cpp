@@ -46,7 +46,7 @@ emscripten::val Convert(const emscripten::val& request, const emscripten::val& c
     auto result = emscripten::val::object();
     try {
         const auto target = request["target"].as<std::string>();
-        if (target != "windows" && target != "linux") throw std::invalid_argument("Unknown target system");
+        if (target != "windows" && target != "linux" && target != "macos") throw std::invalid_argument("Unknown target system");
         const auto name = request["name"].as<std::string>();
         if (name.empty() || name.find_first_of("/\\") != std::string::npos || name == "." || name == "..") throw std::invalid_argument("Invalid executable name");
         std::size_t remaining = 256 * 1024 * 1024;
@@ -68,10 +68,11 @@ emscripten::val Convert(const emscripten::val& request, const emscripten::val& c
         input.RuntimeDirectories.push_back("/input/sce_module");
         if (!request["icon"].isNull()) input.Icon = ReadBytes(request["icon"], remaining);
         Relinker::ConversionOptions options;
-        options.Target = target == "windows" ? Relinker::TargetSystem::Windows : Relinker::TargetSystem::Linux;
+        options.Target = target == "windows" ? Relinker::TargetSystem::Windows : target == "macos" ? Relinker::TargetSystem::MacOs : Relinker::TargetSystem::Linux;
         options.WindowsGui = false;
         options.WindowsDiagnostics = target == "windows";
-        options.ToIntel = request["toIntel"].as<bool>();
+        options.ToRosetta = target == "macos";
+        options.ToIntel = options.ToRosetta || request["toIntel"].as<bool>();
         BrowserProgress progress(callback);
         auto output = Relinker::Conversion(progress).Convert(std::move(input), options);
         result.set("executable", CopyBytes(output.Executable));

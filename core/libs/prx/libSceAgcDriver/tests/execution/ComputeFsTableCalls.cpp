@@ -3,6 +3,7 @@
 #include "prx/libSceAgcDriver/Graphics/include/Draw.hpp"
 #include "SceShaders.hpp"
 #include "VulkanTestDevice.hpp"
+#include <cstdio>
 #include <array>
 #include <cstdint>
 #include <cstring>
@@ -93,6 +94,12 @@ int main() {
             const auto device = OpenVulkanTestDevice();
             if (!device) return VulkanTestSkipped;
         }
+#ifdef __APPLE__
+        if (!AgcDriver::GuestMemory::Accessible(reinterpret_cast<const void*>(FsTable), 0x60u)) {
+            std::puts("skipped, the macOS host holds 0xfe0040000 (0xfc0000000-0x1000000000)");
+            return VulkanTestSkipped;
+        }
+#endif
         CheckTable();
         const auto failure = Dispatch();
         Require(failure.find("not statically resolvable") == std::string::npos, "the call through the FS table did not link: " + failure);

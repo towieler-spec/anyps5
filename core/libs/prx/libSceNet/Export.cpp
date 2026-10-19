@@ -251,6 +251,7 @@ struct Sock {
     bool listening = false;
     bool aborted = false;
     bool read_shut = false;
+    bool read_shut_emulated = false;
     int rcv_timeout_us = 0;
     int snd_timeout_us = 0;
     int reported_error = 0;
@@ -547,6 +548,35 @@ int wait_for_local_address(int s, const Sock& socket, bool empty) {
         if (now >= deadline) return NET_EAGAIN;
         g_cv.WaitUntil(lk, std::min(deadline, now + std::chrono::milliseconds(10)));
     }
+}
+#endif
+
+#ifdef __APPLE__
+void wake_datagram_reader(NativeSocket native, int family) {
+    const int host_family = family == NET_AF_INET ? AF_INET : AF_INET6;
+    sockaddr_storage local{};
+    socklen_t length = sizeof(local);
+    if (::getsockname(native, reinterpret_cast<sockaddr*>(&local), &length) != 0) return;
+    const auto port = [&] { return host_family == AF_INET ? reinterpret_cast<sockaddr_in&>(local).sin_port : reinterpret_cast<sockaddr_in6&>(local).sin6_port; };
+    if (port() == 0) {
+        sockaddr_storage any{};
+        any.ss_family = static_cast<sa_family_t>(host_family);
+        any.ss_len = host_family == AF_INET ? sizeof(sockaddr_in) : sizeof(sockaddr_in6);
+        if (::bind(native, reinterpret_cast<sockaddr*>(&any), any.ss_len) != 0) return;
+        length = sizeof(local);
+        if (::getsockname(native, reinterpret_cast<sockaddr*>(&local), &length) != 0) return;
+    }
+    if (host_family == AF_INET) {
+        auto& address = reinterpret_cast<sockaddr_in&>(local);
+        if (address.sin_addr.s_addr == htonl(INADDR_ANY)) address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    } else {
+        auto& address = reinterpret_cast<sockaddr_in6&>(local);
+        if (IN6_IS_ADDR_UNSPECIFIED(&address.sin6_addr)) address.sin6_addr = in6addr_loopback;
+    }
+    const int sender = ::socket(host_family, SOCK_DGRAM, 0);
+    if (sender < 0) return;
+    ::sendto(sender, "", 0, 0, reinterpret_cast<sockaddr*>(&local), length);
+    ::close(sender);
 }
 #endif
 
@@ -937,6 +967,8 @@ static int disconnect_datagram(const Sock& socket) {
 
 #ifdef _WIN32
 extern "C" void RefuseClosedLoopbackAtOnce_nid_no_patch(SOCKET socket, const sockaddr* address);
+#elif defined(__APPLE__)
+extern "C" int ConnectRetryingLoopbackReset_nid_no_patch(int descriptor, const sockaddr* address, socklen_t size, bool blockingStream);
 #endif
 
 int APS5_VABI sceNetConnect(int s, const void* addr, uint32_t addrlen) {
@@ -959,7 +991,11 @@ int APS5_VABI sceNetConnect(int s, const void* addr, uint32_t addrlen) {
     if (socket.type == NET_SOCK_STREAM) RefuseClosedLoopbackAtOnce_nid_no_patch(socket.native->value, reinterpret_cast<const sockaddr*>(&native));
 #endif
     if (native.ss_family != (socket.family == NET_AF_INET ? AF_INET : AF_INET6)) return fail(NET_EAFNOSUPPORT);
+#ifdef __APPLE__
+    if (ConnectRetryingLoopbackReset_nid_no_patch(socket.native->value, reinterpret_cast<const sockaddr*>(&native), native_length, socket.type == NET_SOCK_STREAM && !socket.nonblock) == 0) {
+#else
     if (::connect(socket.native->value, reinterpret_cast<const sockaddr*>(&native), native_length) == 0) {
+#endif
 #ifdef _WIN32
         note_local_address(s, socket);
 #endif
@@ -987,10 +1023,15 @@ int64_t APS5_VABI sceNetRecv(int s, void* buf, size_t len, int flags) {
 #endif
     const GuestArena::HostWrite destination(len == 0 ? nullptr : buf, len);
     if (!destination.Open()) return fail(NET_EFAULT);
-    const int native_flags = native_message_flags(flags);
+    int native_flags = native_message_flags(flags);
+#ifdef __APPLE__
+    if (socket.read_shut_emulated) native_flags |= MSG_DONTWAIT;
+#endif
     const int result = ::recv(socket.native->value, static_cast<char*>(buf), static_cast<int>(len), native_flags);
 #ifdef _WIN32
     if (result < 0 && socket.type == NET_SOCK_DGRAM && WSAGetLastError() == WSAEMSGSIZE) return static_cast<int64_t>(len);
+#elif defined(__APPLE__)
+    if (result < 0 && socket.read_shut_emulated && errno == EAGAIN) return 0;
 #endif
     return result >= 0 ? result : fail(receive_error(socket));
 }
@@ -1024,11 +1065,19 @@ int64_t APS5_VABI sceNetRecvfrom(int s, void* buf, size_t len, int flags, void* 
     if (!destination.Open()) return fail(NET_EFAULT);
     sockaddr_storage peer{};
     NativeLength peer_length = sizeof(peer);
-    const int native_flags = native_message_flags(flags);
+    int native_flags = native_message_flags(flags);
+#ifdef __APPLE__
+    if (socket.read_shut_emulated) native_flags |= MSG_DONTWAIT;
+#endif
     int result = ::recvfrom(socket.native->value, static_cast<char*>(buf), static_cast<int>(len),
         native_flags, from ? reinterpret_cast<sockaddr*>(&peer) : nullptr, from ? &peer_length : nullptr);
 #ifdef _WIN32
     if (result < 0 && socket.type == NET_SOCK_DGRAM && WSAGetLastError() == WSAEMSGSIZE) result = static_cast<int>(len);
+#elif defined(__APPLE__)
+    if (result < 0 && socket.read_shut_emulated && errno == EAGAIN) {
+        if (from) *fromlen = 0;
+        return 0;
+    }
 #endif
     if (result < 0) return fail(receive_error(socket));
     if (from && !native_to_guest_address(peer, from, fromlen)) return fail(NET_EAFNOSUPPORT);
@@ -1135,8 +1184,20 @@ int64_t APS5_VABI sceNetRecvmsg(int s, NetMsghdr* msg, int flags) {
     }
     sockaddr_storage peer{};
     NativeLength peer_length = sizeof(peer);
+    int recvmsg_flags = native_message_flags(flags);
+#ifdef __APPLE__
+    if (socket.read_shut_emulated) recvmsg_flags |= MSG_DONTWAIT;
+#endif
     std::int64_t received = ::recvfrom(socket.native->value, buffer.data(), static_cast<int>(buffer.size()),
-        native_message_flags(flags), reinterpret_cast<sockaddr*>(&peer), &peer_length);
+        recvmsg_flags, reinterpret_cast<sockaddr*>(&peer), &peer_length);
+#ifdef __APPLE__
+    if (received < 0 && socket.read_shut_emulated && errno == EAGAIN) {
+        msg->flags = 0;
+        if (msg->name) msg->name_length = 0;
+        msg->control_length = 0;
+        return 0;
+    }
+#endif
     if (received < 0) {
 #ifdef _WIN32
         if (!datagram || WSAGetLastError() != WSAEMSGSIZE) return fail(receive_error(socket));
@@ -1171,12 +1232,23 @@ int APS5_VABI sceNetShutdown(int s, int how) {
         socket = it->second;
     }
     const int error = ::shutdown(socket.native->value, how) == 0 ? 0 : native_error();
+#ifdef __APPLE__
+    const bool emulated = error != 0 && errno == ENOTCONN && how != 1 && socket.type != NET_SOCK_STREAM;
+#endif
     if (how != 1) {
         std::lock_guard lk(g_mutex);
         const auto it = g_socks.find(s);
-        if (it != g_socks.end() && it->second.native == socket.native) it->second.read_shut = true;
+        if (it != g_socks.end() && it->second.native == socket.native) {
+            it->second.read_shut = true;
+#ifdef __APPLE__
+            if (emulated) it->second.read_shut_emulated = true;
+#endif
+        }
         g_cv.NotifyAll();
     }
+#ifdef __APPLE__
+    if (emulated) wake_datagram_reader(socket.native->value, socket.family);
+#endif
     return error == 0 ? 0 : fail(error);
 }
 
@@ -1620,6 +1692,9 @@ int lookup_host(int rid, const char* hostname, const char* func, int family, std
     }
     for (const addrinfo* entry = results; entry != nullptr; entry = entry->ai_next) {
         if (entry->ai_family != family) continue;
+#ifdef __APPLE__
+        if (family == AF_INET6 && IN6_IS_ADDR_V4MAPPED(&reinterpret_cast<const sockaddr_in6*>(entry->ai_addr)->sin6_addr)) continue;
+#endif
         std::array<std::uint8_t, 16> address{};
         if (family == AF_INET6) std::memcpy(address.data(), &reinterpret_cast<const sockaddr_in6*>(entry->ai_addr)->sin6_addr, 16);
         else std::memcpy(address.data(), &reinterpret_cast<const sockaddr_in*>(entry->ai_addr)->sin_addr, 4);

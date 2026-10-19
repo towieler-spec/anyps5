@@ -20,6 +20,11 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#elif defined(__APPLE__)
+#include "prx/libc/include/specifics/linux/ElfTypes.hpp"
+#include <cstring>
+#include <dlfcn.h>
+#include <mach-o/dyld.h>
 #else
 #include <dlfcn.h>
 #include <link.h>
@@ -40,6 +45,9 @@ struct Module {
     void* native = nullptr;
     bool owned = true;
     bool global = false;
+#ifdef __APPLE__
+    const void* image = nullptr;
+#endif
 #ifdef _WIN32
     std::uintptr_t globalOrder = 0;
 #endif
@@ -66,6 +74,7 @@ void* Symbol(Module& module, const char* name) {
 #endif
 }
 #ifndef _WIN32
+#ifndef __APPLE__
 const link_map* MainProgramMap() {
     static const link_map* const map = [] {
         void* handle = ::dlopen(nullptr, RTLD_LAZY);
@@ -77,19 +86,56 @@ const link_map* MainProgramMap() {
     }();
     return map;
 }
+#else
+std::uintptr_t ImageBase(void* native) {
+    const char* name = nullptr;
+    for (std::uint32_t index = 0; index < _dyld_image_count() && name == nullptr; ++index) {
+        const char* candidate = _dyld_get_image_name(index);
+        void* handle = candidate != nullptr ? ::dlopen(candidate, RTLD_LAZY | RTLD_NOLOAD) : nullptr;
+        if (handle == nullptr) continue;
+        if (handle == native) name = candidate;
+        ::dlclose(handle);
+    }
+    std::pair<const char*, std::uintptr_t> search{name, 0};
+    if (name != nullptr) {
+        dl_iterate_phdr([](dl_phdr_info* image, std::size_t, void* data) {
+            auto& [wanted, base] = *static_cast<std::pair<const char*, std::uintptr_t>*>(data);
+            if (image->dlpi_name == nullptr || std::strcmp(image->dlpi_name, wanted) != 0) return 0;
+            base = image->dlpi_addr;
+            return 1;
+        }, &search);
+    }
+    return search.second;
+}
+#endif
 
 bool FromGuestModule(void* address) {
     Dl_info info{};
+#ifdef __APPLE__
+    if (address == nullptr || !::dladdr(address, &info) || info.dli_fname == nullptr || info.dli_fbase == nullptr) return false;
+    if (info.dli_fbase == _dyld_get_image_header(0)) return true;
+#else
     link_map* image = nullptr;
     if (address == nullptr || !::dladdr1(address, &info, reinterpret_cast<void**>(&image), RTLD_DL_LINKMAP) || info.dli_fname == nullptr || image == nullptr) return false;
     if (image == MainProgramMap()) return true;
+#endif
     const std::string path(info.dli_fname);
     return path.ends_with(".prx");
 }
 
 void* DefaultScopeSymbol(const char* symbolName) {
     auto* result = ::dlsym(RTLD_DEFAULT, symbolName);
-    return FromGuestModule(result) ? result : nullptr;
+    if (!FromGuestModule(result)) return nullptr;
+#ifdef __APPLE__
+    Dl_info info{};
+    if (::dladdr(result, &info) && info.dli_fbase != nullptr) {
+        std::lock_guard lock(modulesMutex);
+        for (const auto& [key, module] : modules) {
+            if (!module->global && module->image == info.dli_fbase) return nullptr;
+        }
+    }
+#endif
+    return result;
 }
 #endif
 
@@ -190,10 +236,24 @@ void* APS5_VABI dlopen_nid_postfix(const char* path, int flags) {
         }
 #else
         const auto resolved = path ? RelinkedModulePath_nid_no_patch(ResolvePath_nid_no_patch(path)).string() : std::string{};
+#ifdef __APPLE__
+        const int nativeFlags = ((flags & 3) == 1 ? RTLD_LAZY : RTLD_NOW) | RTLD_GLOBAL;
+#else
         const int nativeFlags = ((flags & 3) == 1 ? RTLD_LAZY : RTLD_NOW) |
             ((flags & 0x100) ? RTLD_GLOBAL : RTLD_LOCAL);
+#endif
         module->native = ::dlopen(path ? resolved.c_str() : nullptr, nativeFlags);
         if (!module->native) { Error(::dlerror()); return nullptr; }
+#ifdef __APPLE__
+        if (path && !module->global) {
+            for (std::uint32_t index = 0; index < _dyld_image_count() && module->image == nullptr; ++index) {
+                void* loaded = ::dlopen(_dyld_get_image_name(index), RTLD_LAZY | RTLD_NOLOAD);
+                if (loaded == nullptr) continue;
+                if (loaded == module->native) module->image = _dyld_get_image_header(index);
+                ::dlclose(loaded);
+            }
+        }
+#endif
 #endif
         std::lock_guard lock(modulesMutex);
         const auto handle = nextHandle++;
@@ -264,6 +324,8 @@ int APS5_VABI dlclose_nid_postfix(void* handle) {
         GuestAllocations::Mutation mutation;
 #ifdef _WIN32
         mutation.UnregisterImage(module->native);
+#elif defined(__APPLE__)
+        mutation.UnregisterImage(reinterpret_cast<const void*>(ImageBase(module->native)));
 #else
         mutation.UnregisterImage(reinterpret_cast<const void*>(static_cast<link_map*>(module->native)->l_addr));
 #endif

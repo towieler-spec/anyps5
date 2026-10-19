@@ -16,7 +16,10 @@ test("estimates all ZIP outputs against one shared memory limit", () => {
     (total, summary) => total + memoryEstimate(summary.totalBytes, summary.windowsSelectedBytes, 1024, summary.files),
     0
   ));
-  assert.throws(() => batchMemoryEstimate([], "macos", 0), /Unsupported conversion target/u);
+  assert.equal(batchMemoryEstimate(summaries, "macos", 0), summaries.reduce(
+    (total, summary) => total + memoryEstimate(summary.totalBytes, summary.selectedBytes, 0, summary.files),
+    0
+  ));
   assert.throws(() => batchMemoryEstimate([{ totalBytes: Number.MAX_SAFE_INTEGER, selectedBytes: 0, windowsSelectedBytes: 0, files: 0 }], "linux", 0), /unsupported file size/u);
   assert.equal(MEMORY_LIMIT, 256 * 1024 * 1024);
 });

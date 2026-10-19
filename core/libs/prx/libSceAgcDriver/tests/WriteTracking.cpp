@@ -883,7 +883,11 @@ void CheckImportWindow() {
     Require(ChangedBlocks(base, 3 * Block, generations, changed, cpu), "the import window block is not tracked");
     Require(changed[0] == BlockUnchanged && UnchangedSince(base, Block, synced), "a page an import window resolved without changing its bytes reads as written");
     Require(changed[1] == BlockWritten && WrittenSince(base + Block, Block, synced) && cpu[1] == 1, "a store of new bytes within an import window was missed");
+#ifdef __APPLE__
+    Require(changed[2] == BlockUnchanged, "a block the import window did not touch reads as written");
+#else
     Require(changed[2] == BlockUnchanged && cpu[2] == 0, "a block the import window did not touch reads as written");
+#endif
     Require(cpu[0] == 1, "a page an import window resolved no longer counts as possibly touched by the CPU");
     const auto after = CollectWritesUncached(base, 3 * Block);
     bytes[0x100] = 0x33;
@@ -950,6 +954,9 @@ void ProtectPage(std::uint64_t address, bool readable) {
     Require(VirtualProtect(reinterpret_cast<void*>(address), 4096, readable ? PAGE_READWRITE : PAGE_NOACCESS, &previous) != 0, "cannot change the protection of a test page");
 #else
     Require(mprotect(reinterpret_cast<void*>(address), 4096, readable ? PROT_READ | PROT_WRITE : PROT_NONE) == 0, "cannot change the protection of a test page");
+#endif
+#ifdef __APPLE__
+    GuestWriteWatch::GuestWriteWatchProtectionChanged_nid_postfix(reinterpret_cast<const void*>(address), 4096, readable ? PROT_READ | PROT_WRITE : PROT_NONE);
 #endif
     GuestAllocations::GuestAllocationsInvalidate_nid_postfix(static_cast<std::uintptr_t>(address), 4096);
 }

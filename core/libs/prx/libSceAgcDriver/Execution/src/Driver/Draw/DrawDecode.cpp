@@ -134,7 +134,7 @@ std::shared_ptr<DrawDecode> Driver::decodeDraw(const QueueState& queue, const Su
     product->pixel.reversedBlend = product->state.reversedBlend;
     product->pixel.alphaToCoverage = product->state.alphaToCoverage;
     product->pixel.quadPixelMask = Graphics::QuadPixelMask(product->state);
-    product->pixel.quadSampleMask = Graphics::QuadSampleMasks(product->state);
+    product->pixel.quadSampleMask = Graphics::QuadSampleMasks(product->state, product->state.perSampleShading);
     if (product->pixel.stencilRefExportEnable && Graphics::StencilReferenceUnused(product->state)) {
         const auto localDevice = device.Load();
         const auto capabilities = localDevice == nullptr ? std::vector<std::uint32_t>{} : localDevice->Target().supportedCapabilities;

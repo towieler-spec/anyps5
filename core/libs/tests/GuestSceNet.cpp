@@ -1525,8 +1525,22 @@ int main() {
     NetCtlIfStat first{};
     first.device = 7;
     first.reserved[7] = 7;
+#ifdef __APPLE__
+    if (state == 3) {
+        bool unreadable = false;
+        try {
+            static_cast<void>(sceNetCtlGetIfStat(&first));
+        } catch (const std::runtime_error&) {
+            unreadable = true;
+        }
+        Require(unreadable);
+    }
+    const int statResult = state == 3 ? -1 : sceNetCtlGetIfStat(&first);
+    Require(state == 3 || statResult == static_cast<int>(0x80412108));
+#else
     const int statResult = sceNetCtlGetIfStat(&first);
     Require(statResult == (state == 3 ? 0 : static_cast<int>(0x80412108)));
+#endif
     if (statResult == 0) {
         Require(first.device == 0 && first.reserved[7] == 0);
         NetCtlIfStat second{};

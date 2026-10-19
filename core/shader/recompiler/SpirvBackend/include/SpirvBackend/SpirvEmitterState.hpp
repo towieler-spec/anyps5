@@ -112,6 +112,7 @@ struct SpirvEmitterState {
     bool float16DenormPreserve = false;
     bool robustBufferAccess2 = false;
     bool float32FlushToZero = false;
+    bool fusedExactArithmetic = false;
     std::unordered_set<const IrValue*> sharedLaneValues;
     std::uint32_t laneHalf = 0;
     std::uint32_t spirvVersion = 0x00010300u;
@@ -170,6 +171,8 @@ struct SpirvEmitterState {
     std::uint32_t loopGuardVisits = 0;
     std::uint32_t loopGuardPc = 0;
     std::uint32_t srgbTableVariable = 0;
+    // Private variables, by type, that subgroup results are stored in (EmitConvergentResult).
+    std::unordered_map<std::uint32_t, std::uint32_t> subgroupResultVariables;
     std::uint32_t gdsVariable = 0;
     std::uint32_t gdsLength = 0;
     std::uint32_t pushConstantVariable = 0;
@@ -204,6 +207,8 @@ struct SpirvEmitterState {
     std::uint32_t pixelValidMaskVariable = 0;
     std::uint32_t quadPixelUncovered = 0;
     std::uint32_t sampleMaskInputVariable = 0;
+    std::uint32_t sampleMaskInputCopy = 0;
+    std::uint32_t ownSampleIdVariable = 0;
     std::uint32_t quadSampleCoverage = 0;
     std::uint32_t subgroupLocalInvocationIdVariable = 0;
     std::uint32_t subgroupIdVariable = 0;
@@ -217,6 +222,7 @@ struct SpirvEmitterState {
     std::uint32_t depthVariable = 0;
     std::uint32_t sampleMaskVariable = 0;
     std::uint32_t stencilRefVariable = 0;
+    std::uint32_t stencilRefOutput = 0;
     bool stencilReplay = false;
     std::vector<SpirvInputBinding> inputs;
     std::vector<SpirvOutputBinding> outputs;

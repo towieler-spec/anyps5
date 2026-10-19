@@ -94,7 +94,35 @@ Framebuffer::~Framebuffer() {
     if (framebuffer) context.Function<PFN_vkDestroyFramebuffer>("vkDestroyFramebuffer")(context.device, framebuffer, nullptr);
 }
 
+bool ClampsDepthRange(const Context& context) {
+#ifdef __APPLE__
+    return !context.depthRangeUnrestricted;
+#else
+    static_cast<void>(context);
+    return false;
+#endif
+}
+
+void ReportClampedDepth(const char* what, float low, float high) {
+    static std::once_flag reported;
+    std::call_once(reported, [&] { std::fprintf(stderr, "[gpu] %s [%f, %f] is clamped to [0, 1]: the device lacks VK_EXT_depth_range_unrestricted\n", what, low, high); });
+}
+
+float DeviceDepth(const Context& context, float depth) {
+    return ClampsDepthRange(context) ? std::clamp(depth, 0.0f, 1.0f) : depth;
+}
+
+VkViewport DeviceViewport(const Context& context, VkViewport viewport) {
+    viewport.minDepth = DeviceDepth(context, viewport.minDepth);
+    viewport.maxDepth = DeviceDepth(context, viewport.maxDepth);
+    return viewport;
+}
+
 void ValidateDepthBounds(const Context& context, const State& state) {
+    if (ClampsDepthRange(context) && state.depthBoundsTest && (state.minDepthBounds < 0.0f || state.minDepthBounds > 1.0f || state.maxDepthBounds < 0.0f || state.maxDepthBounds > 1.0f)) {
+        ReportClampedDepth("depth bounds", state.minDepthBounds, state.maxDepthBounds);
+        return;
+    }
     Require(!state.depthBoundsTest || context.depthRangeUnrestricted || (state.minDepthBounds >= 0.0f && state.minDepthBounds <= 1.0f && state.maxDepthBounds >= 0.0f && state.maxDepthBounds <= 1.0f), "depth bounds outside [0, 1] require VK_EXT_depth_range_unrestricted");
 }
 
@@ -111,9 +139,61 @@ void ValidateProvokingVertex(const Context& context, const State& state, std::sp
         }
         return;
     }
+    if (BarycentricPatches(state, shaders)) {
+        for (const auto& shader : shaders) {
+            if (shader.stage != ShaderRecompiler::ShaderStage::Fragment || shader.program == nullptr) continue;
+            Require(std::none_of(shader.program->fragmentParameters.begin(), shader.program->fragmentParameters.end(), [](const ShaderRecompiler::FragmentParameter& parameter) { return parameter.flat && parameter.perVertex; }), "last provoking vertex with explicit per-vertex flat interpolation is unsupported");
+        }
+        return;
+    }
+    const auto readsProvokingVertex = [](const ShaderRecompiler::RecompileResult& program) {
+        if (std::any_of(program.fragmentParameters.begin(), program.fragmentParameters.end(), [](const ShaderRecompiler::FragmentParameter& parameter) {
+            return parameter.flat || parameter.perVertex || parameter.custom || parameter.flatP10;
+        })) return true;
+        const auto words = program.spirv.Words();
+        if (words.size() < 5) return true;
+        constexpr std::uint32_t NoMember = 0xffffffffu;
+        const auto key = [](std::uint32_t target, std::uint32_t member) { return (static_cast<std::uint64_t>(target) << 32u) | member; };
+        std::unordered_map<std::uint64_t, std::uint32_t> builtIns;
+        std::vector<std::uint64_t> perVertexValues;
+        for (std::size_t cursor = 5; cursor < words.size();) {
+            const auto count = words[cursor] >> 16u;
+            if (count == 0 || count > words.size() - cursor) return true;
+            const auto op = static_cast<spv::Op>(words[cursor] & 0xffffu);
+            const std::size_t decoration = op == spv::OpDecorate ? 2 : op == spv::OpMemberDecorate ? 3 : 0;
+            if (decoration != 0 && count > decoration) {
+                const auto target = key(words[cursor + 1], op == spv::OpMemberDecorate ? words[cursor + 2] : NoMember);
+                if (words[cursor + decoration] == spv::DecorationFlat || words[cursor + decoration] == spv::DecorationPerVertexKHR) perVertexValues.push_back(target);
+                if (words[cursor + decoration] == spv::DecorationBuiltIn && count > decoration + 1) builtIns[target] = words[cursor + decoration + 1];
+            }
+            cursor += count;
+        }
+        return std::any_of(perVertexValues.begin(), perVertexValues.end(), [&](std::uint64_t target) {
+            const auto builtIn = builtIns.find(target);
+            if (builtIn == builtIns.end()) return true;
+            switch (builtIn->second) {
+            case spv::BuiltInFragCoord:
+            case spv::BuiltInPointCoord:
+            case spv::BuiltInFrontFacing:
+            case spv::BuiltInSampleId:
+            case spv::BuiltInSamplePosition:
+            case spv::BuiltInSampleMask:
+            case spv::BuiltInHelperInvocation:
+            case spv::BuiltInSubgroupSize:
+            case spv::BuiltInSubgroupLocalInvocationId:
+                return false;
+            default:
+                return true;
+            }
+        });
+    };
+    const bool observed = std::any_of(shaders.begin(), shaders.end(), [&](const CompiledShader& shader) {
+        return shader.stage == ShaderRecompiler::ShaderStage::Fragment && (shader.program == nullptr || readsProvokingVertex(*shader.program));
+    });
+    if (!context.provokingVertexLast && !observed) return;
     Require(context.provokingVertexLast, "last provoking vertex requires VK_EXT_provoking_vertex with provokingVertexLast enabled");
     const bool meshPrimitives = state.stages.path == ShaderPath::Geometry && state.stages.mesh;
-    Require(!BarycentricPatches(state, shaders) && !state.stages.tessellation && (meshPrimitives || (state.stages.path == ShaderPath::Vertex && !state.stages.mesh)), "last provoking vertex is unsupported for generated primitive pipelines");
+    Require(!state.stages.tessellation && (meshPrimitives || (state.stages.path == ShaderPath::Vertex && !state.stages.mesh)), "last provoking vertex is unsupported for generated primitive pipelines");
     Require(!meshPrimitives || (state.topology != VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP && state.topology != VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN), "last provoking vertex is unsupported for triangle strips or fans assembled for a geometry program");
     Require(state.rectList || state.topology == VK_PRIMITIVE_TOPOLOGY_POINT_LIST || state.topology == VK_PRIMITIVE_TOPOLOGY_LINE_LIST || state.topology == VK_PRIMITIVE_TOPOLOGY_LINE_STRIP || state.topology == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST || state.topology == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP || state.topology == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN, "last provoking vertex is unsupported for this primitive topology");
     for (const auto& shader : shaders) {
@@ -752,8 +832,9 @@ void Pipeline::Begin(VkCommandBuffer commands, const Framebuffer& framebuffer, V
 void Pipeline::Continue(VkCommandBuffer commands, const State& state) const {
     if (optimized != nullptr) optimized->Schedule();
     const auto best = optimized != nullptr ? optimized->handle.load() : VK_NULL_HANDLE;
+    const auto viewport = DeviceViewport(context, state.viewport);
     context.Resolved(&DeviceFunctions::cmdBindPipeline, "vkCmdBindPipeline")(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, best != VK_NULL_HANDLE ? best : pipeline);
-    context.Resolved(&DeviceFunctions::cmdSetViewport, "vkCmdSetViewport")(commands, 0, 1, &state.viewport);
+    context.Resolved(&DeviceFunctions::cmdSetViewport, "vkCmdSetViewport")(commands, 0, 1, &viewport);
     context.Resolved(&DeviceFunctions::cmdSetScissor, "vkCmdSetScissor")(commands, 0, 1, &state.scissor);
     if (state.stencilReplayReference) context.Resolved(&DeviceFunctions::cmdSetStencilReference, "vkCmdSetStencilReference")(commands, VK_STENCIL_FACE_FRONT_AND_BACK, *state.stencilReplayReference);
     if (libraries) {
@@ -762,7 +843,7 @@ void Pipeline::Continue(VkCommandBuffer commands, const State& state) const {
     }
     if (depthBias) context.Resolved(&DeviceFunctions::cmdSetDepthBias, "vkCmdSetDepthBias")(commands, HostDepthBiasConstant(context, state.depth->format, state.depthBiasConstant), state.depthBiasClamp, state.depthBiasSlope);
     if (!depthBounds) return;
-    context.Resolved(&DeviceFunctions::cmdSetDepthBounds, "vkCmdSetDepthBounds")(commands, state.minDepthBounds, state.maxDepthBounds);
+    context.Resolved(&DeviceFunctions::cmdSetDepthBounds, "vkCmdSetDepthBounds")(commands, DeviceDepth(context, state.minDepthBounds), DeviceDepth(context, state.maxDepthBounds));
 }
 
 void Pipeline::setLibraryState(VkCommandBuffer commands, const State& state) const {
@@ -770,7 +851,7 @@ void Pipeline::setLibraryState(VkCommandBuffer commands, const State& state) con
     context.Resolved(&DeviceFunctions::cmdSetCullMode, "vkCmdSetCullModeEXT")(commands, state.cullMode);
     context.Resolved(&DeviceFunctions::cmdSetFrontFace, "vkCmdSetFrontFaceEXT")(commands, state.frontFace);
     context.Resolved(&DeviceFunctions::cmdSetDepthBias, "vkCmdSetDepthBias")(commands, depthBias ? HostDepthBiasConstant(context, state.depth->format, state.depthBiasConstant) : 0.0f, depthBias ? state.depthBiasClamp : 0.0f, depthBias ? state.depthBiasSlope : 0.0f);
-    context.Resolved(&DeviceFunctions::cmdSetDepthBounds, "vkCmdSetDepthBounds")(commands, depthBounds ? state.minDepthBounds : 0.0f, depthBounds ? state.maxDepthBounds : 1.0f);
+    context.Resolved(&DeviceFunctions::cmdSetDepthBounds, "vkCmdSetDepthBounds")(commands, depthBounds ? DeviceDepth(context, state.minDepthBounds) : 0.0f, depthBounds ? DeviceDepth(context, state.maxDepthBounds) : 1.0f);
     context.Resolved(&DeviceFunctions::cmdSetDepthTestEnable, "vkCmdSetDepthTestEnableEXT")(commands, depth && state.depthTest);
     context.Resolved(&DeviceFunctions::cmdSetDepthWriteEnable, "vkCmdSetDepthWriteEnableEXT")(commands, depth && state.depthWrite);
     context.Resolved(&DeviceFunctions::cmdSetDepthCompareOp, "vkCmdSetDepthCompareOpEXT")(commands, depth ? state.depthCompare : VK_COMPARE_OP_ALWAYS);
@@ -794,10 +875,11 @@ void Pipeline::ContinueSecondChannel(VkCommandBuffer commands) const {
 void Pipeline::ContinueBackFaces(VkCommandBuffer commands, const State& state) const {
     Require(backFaces != VK_NULL_HANDLE, "the pipeline draws both faces in one pass");
     context.Resolved(&DeviceFunctions::cmdBindPipeline, "vkCmdBindPipeline")(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, backFaces);
-    context.Resolved(&DeviceFunctions::cmdSetViewport, "vkCmdSetViewport")(commands, 0, 1, &state.viewport);
+    const auto viewport = DeviceViewport(context, state.viewport);
+    context.Resolved(&DeviceFunctions::cmdSetViewport, "vkCmdSetViewport")(commands, 0, 1, &viewport);
     context.Resolved(&DeviceFunctions::cmdSetScissor, "vkCmdSetScissor")(commands, 0, 1, &state.scissor);
     context.Resolved(&DeviceFunctions::cmdSetDepthBias, "vkCmdSetDepthBias")(commands, HostDepthBiasConstant(context, state.depth->format, state.backDepthBiasConstant), state.depthBiasClamp, state.backDepthBiasSlope);
-    if (depthBounds) context.Resolved(&DeviceFunctions::cmdSetDepthBounds, "vkCmdSetDepthBounds")(commands, state.minDepthBounds, state.maxDepthBounds);
+    if (depthBounds) context.Resolved(&DeviceFunctions::cmdSetDepthBounds, "vkCmdSetDepthBounds")(commands, DeviceDepth(context, state.minDepthBounds), DeviceDepth(context, state.maxDepthBounds));
 }
 
 void Pipeline::PushConstants(VkCommandBuffer commands, VkShaderStageFlags stages, std::span<const std::byte, PipelinePushConstantBytes> bytes) const {

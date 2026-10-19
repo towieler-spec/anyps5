@@ -130,6 +130,21 @@ int main() {
         return 1;
     }
 
+#ifdef __APPLE__
+    struct timespec cpuStart{};
+    struct timespec cpuEnd{};
+    clock_gettime(CLOCK_THREAD_CPUTIME_ID, &cpuStart);
+    const auto longWaitStart = std::chrono::steady_clock::now();
+    PreciseSleepUs(1000000);
+    const auto longWaitElapsed = std::chrono::steady_clock::now() - longWaitStart;
+    clock_gettime(CLOCK_THREAD_CPUTIME_ID, &cpuEnd);
+    const auto cpuNanos = (cpuEnd.tv_sec - cpuStart.tv_sec) * 1000000000LL + cpuEnd.tv_nsec - cpuStart.tv_nsec;
+    if (longWaitElapsed < std::chrono::seconds(1) || cpuNanos > 100000000LL) {
+        std::cerr << "PreciseSleepUs(1000000) returned early or spent too long spinning\n";
+        return 1;
+    }
+#endif
+
     const auto subMicroDeadline = std::chrono::steady_clock::now() + std::chrono::nanoseconds(500);
     PreciseSleepUntil(subMicroDeadline);
     if (std::chrono::steady_clock::now() < subMicroDeadline) {

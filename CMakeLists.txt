@@ -74,6 +74,9 @@ if(ANYPS5_ENABLE_ASAN)
     add_compile_definitions(ANYPS5_ENABLE_ASAN=1)
 elseif(NOT APPLE)
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -static -static-libgcc -static-libstdc++")
+else()
+    add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-fexperimental-library>)
+    add_link_options(-fexperimental-library)
 endif()
 
 if(APPLE AND NOT ANYPS5_RELINKER_ONLY)
@@ -165,6 +168,8 @@ if(BUILD_TESTING)
             ${CMAKE_CURRENT_SOURCE_DIR}/tools/tests/test_test_registration.py)
         add_test(NAME build_eligibility COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tools/tests/test_build_eligibility.py)
+        add_test(NAME package_macos_app COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/tests/test_package_macos_app.py)
         add_test(NAME check_skips COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tools/tests/test_check_skips.py)
         add_test(NAME select_tests COMMAND ${Python3_EXECUTABLE}
@@ -306,6 +311,9 @@ set(LIBUSB_INSTALL_TARGETS OFF CACHE BOOL "" FORCE)
 set(LIBUSB_BUILD_TESTING OFF CACHE BOOL "" FORCE)
 set(LIBUSB_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(LIBUSB_ENABLE_UDEV OFF CACHE BOOL "" FORCE)
+if(APPLE)
+    set(HAVE_PIPE2 "" CACHE INTERNAL "" FORCE)
+endif()
 add_subdirectory(3rdparty/libusb-cmake EXCLUDE_FROM_ALL)
 set_target_properties(usb-1.0 PROPERTIES POSITION_INDEPENDENT_CODE ON)
 

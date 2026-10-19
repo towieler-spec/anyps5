@@ -19,6 +19,10 @@
 #include <sstream>
 #include <sys/mman.h>
 #include <sys/resource.h>
+#ifdef __APPLE__
+#include <mach/mach.h>
+#include <mach/mach_vm.h>
+#endif
 #endif
 #include <algorithm>
 #include <cassert>
@@ -374,6 +378,17 @@ int APS5_VABI sceKernelVirtualQuery(const void* addr, int flags, VirtualQueryInf
  info->end = info->start + host.RegionSize;
  const bool writable = (host.Protect & (PAGE_READWRITE | PAGE_EXECUTE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_WRITECOPY)) != 0;
  const bool executable = (host.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) != 0;
+ #elif defined(__APPLE__)
+ mach_vm_address_t region = address;
+ mach_vm_size_t regionSize = 0;
+ vm_region_basic_info_data_64_t host{};
+ mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
+ mach_port_t object = MACH_PORT_NULL;
+ if (mach_vm_region(mach_task_self(), &region, &regionSize, VM_REGION_BASIC_INFO_64, reinterpret_cast<vm_region_info_t>(&host), &count, &object) != KERN_SUCCESS || region > address || (host.protection & VM_PROT_READ) == 0) return SCE_KERNEL_ERROR_EACCES;
+ info->start = region;
+ info->end = region + regionSize;
+ const bool writable = (host.protection & VM_PROT_WRITE) != 0;
+ const bool executable = (host.protection & VM_PROT_EXECUTE) != 0;
  #else
  std::ifstream maps("/proc/self/maps");
  std::string line;
@@ -662,9 +677,28 @@ int UnlockHostPages(std::uintptr_t start, std::uintptr_t end) {
     return 0;
 }
 #else
+#ifdef __APPLE__
+bool HasInaccessiblePages(std::uintptr_t start, std::uintptr_t end) {
+    for (auto address = static_cast<mach_vm_address_t>(start); address < end;) {
+        auto region = address;
+        mach_vm_size_t size = 0;
+        vm_region_basic_info_data_64_t info{};
+        mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
+        mach_port_t object = MACH_PORT_NULL;
+        if (mach_vm_region(mach_task_self(), &region, &size, VM_REGION_BASIC_INFO_64, reinterpret_cast<vm_region_info_t>(&info), &count, &object) != KERN_SUCCESS) return true;
+        if (region > address || info.protection == VM_PROT_NONE) return true;
+        address = region + size;
+    }
+    return false;
+}
+#endif
+
 int LockHostPages(std::uintptr_t start, std::uintptr_t end) {
     auto* const address = reinterpret_cast<void*>(start);
     const std::size_t bytes = end - start;
+#ifdef __APPLE__
+    if (HasInaccessiblePages(start, end)) return SCE_KERNEL_ERROR_ENOMEM;
+#endif
     if (::mlock(address, bytes) == 0) {
         RecordLockedRange(start, end);
         return 0;
@@ -722,7 +756,7 @@ int APS5_VABI sceKernelMunlock_nid_postfix(void* address, std::uint64_t length) 
 }
 
 int APS5_VABI sceKernelMunlockall_nid_postfix() {
-#ifndef _WIN32
+#if !defined(_WIN32) && !defined(__APPLE__)
     ::munlockall();
 #endif
     std::map<uintptr_t, size_t> ranges;
@@ -748,6 +782,10 @@ int APS5_VABI sceKernelMunlockall_nid_postfix() {
             cursor = next;
         }
     }
+#elif defined(__APPLE__)
+    const int saved = errno;
+    for (const auto& [start, len] : ranges) ::munlock(reinterpret_cast<void*>(start), len);
+    errno = saved;
 #endif
     return 0;
 }

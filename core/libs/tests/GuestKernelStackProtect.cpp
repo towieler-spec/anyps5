@@ -11,6 +11,16 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#elif defined(__APPLE__)
+#include <cstdio>
+#include <cstring>
+#include <mach-o/dyld.h>
+#include <mach/mach.h>
+#include <mach/mach_vm.h>
+#include <sys/mman.h>
+#include <sys/resource.h>
+#include <sys/wait.h>
+#include <unistd.h>
 #else
 #include <sys/mman.h>
 #include <sys/resource.h>
@@ -49,6 +59,16 @@ static PageState QueryPage(std::uintptr_t address) {
     Require(VirtualQuery(reinterpret_cast<const void*>(address), &memory, sizeof(memory)) == sizeof(memory));
     const bool mapped = memory.State == MEM_COMMIT;
     return {mapped, mapped && (memory.Protect & (PAGE_READWRITE | PAGE_EXECUTE_READWRITE)) != 0, (static_cast<std::uint64_t>(memory.State) << 32) | memory.Protect};
+#elif defined(__APPLE__)
+    mach_vm_address_t region = address;
+    mach_vm_size_t size = 0;
+    vm_region_basic_info_data_64_t info{};
+    mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
+    mach_port_t object = MACH_PORT_NULL;
+    if (mach_vm_region(mach_task_self(), &region, &size, VM_REGION_BASIC_INFO_64, reinterpret_cast<vm_region_info_t>(&info), &count, &object) != KERN_SUCCESS || region > address) return {false, false, 0};
+    const bool readable = (info.protection & VM_PROT_READ) != 0;
+    const bool writable = (info.protection & VM_PROT_WRITE) != 0;
+    return {true, readable && writable, 1ull | (readable ? 2ull : 0) | (writable ? 4ull : 0) | ((info.protection & VM_PROT_EXECUTE) != 0 ? 8ull : 0)};
 #else
     std::FILE* maps = std::fopen("/proc/self/maps", "r");
     Require(maps != nullptr);
@@ -507,12 +527,19 @@ static bool OvercommitStrict() {
 }
 
 static bool ChildPasses(const char* mode, bool unlimitedStack) {
+#ifdef __APPLE__
+    char executable[4096]{};
+    std::uint32_t executableSize = sizeof(executable);
+    Require(_NSGetExecutablePath(executable, &executableSize) == 0);
+#else
+    const char* executable = "/proc/self/exe";
+#endif
     const pid_t child = fork();
     Require(child >= 0);
     if (child == 0) {
         rlimit limit{};
         if (unlimitedStack && getrlimit(RLIMIT_STACK, &limit) == 0) limit.rlim_cur = RLIM_INFINITY;
-        if (!unlimitedStack || setrlimit(RLIMIT_STACK, &limit) == 0) execl("/proc/self/exe", "/proc/self/exe", mode, static_cast<char*>(nullptr));
+        if (!unlimitedStack || setrlimit(RLIMIT_STACK, &limit) == 0) execl(executable, executable, mode, static_cast<char*>(nullptr));
         std::_Exit(127);
     }
     int status = 0;

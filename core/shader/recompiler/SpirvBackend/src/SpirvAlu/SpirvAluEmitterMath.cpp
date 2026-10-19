@@ -186,10 +186,13 @@ std::uint32_t EmitDsMaskedLaneRead(SpirvEmitterState& state, std::uint32_t sourc
     if (state.laneCount == 2) {
         lane = Binary(state, spv::OpBitwiseAnd, TypeU32(state), lane, ConstantU32(state, 31u));
     }
-    const auto shuffled = state.module.AllocateId();
-    EmitSubgroupShuffleInHalf(state, TypeU32(state), shuffled, source, lane);
-    const auto sourceExec = state.module.AllocateId();
-    EmitSubgroupShuffleInHalf(state, TypeBool(state), sourceExec, exec, lane);
+    const auto shuffledRaw = state.module.AllocateId();
+    EmitSubgroupShuffleInHalf(state, TypeU32(state), shuffledRaw, source, lane);
+    const auto sourceExecRaw = state.module.AllocateId();
+    EmitSubgroupShuffleInHalf(state, TypeBool(state), sourceExecRaw, exec, lane);
+    const bool convergent = !HostSubgroupSingleLane(state);
+    const auto shuffled = convergent ? EmitConvergentResult(state, TypeU32(state), shuffledRaw) : shuffledRaw;
+    const auto sourceExec = convergent ? EmitConvergentResult(state, TypeBool(state), sourceExecRaw) : sourceExecRaw;
     const auto sourceActive = Binary(state, spv::OpLogicalAnd, TypeBool(state), sourceExec, EmitSubgroupLaneActiveBool(state, lane));
     return Select(state, TypeU32(state), sourceActive, shuffled, ConstantU32(state, 0u));
 }
@@ -870,8 +873,12 @@ std::uint32_t EmitUGreaterThan64(SpirvEmitterState& state, std::uint32_t arg0, s
     return CompareOrdered64(state, arg0, arg1, spv::OpUGreaterThan, spv::OpUGreaterThan);
 }
 
+// NaN from the bits, (bits & 0x7fffffff) > 0x7f800000, not x != x: through MoltenVK, Metal evaluated
+// x != x as false for a NaN converted from f16.
 std::uint32_t EmitFPIsNan32(SpirvEmitterState& state, std::uint32_t arg0) {
-    return EmitNative<spv::OpFUnordNotEqual, IrType::U1>(state, arg0, arg0);
+    const auto bits = Unary(state, spv::OpBitcast, TypeU32(state), arg0);
+    const auto magnitude = Binary(state, spv::OpBitwiseAnd, TypeU32(state), bits, ConstantU32(state, 0x7fffffffu));
+    return Binary(state, spv::OpUGreaterThan, TypeBool(state), magnitude, ConstantU32(state, 0x7f800000u));
 }
 
 std::uint32_t EmitFPMin32(SpirvEmitterState& state, std::uint32_t arg0, std::uint32_t arg1) {
@@ -1414,14 +1421,17 @@ std::uint32_t EmitFPUnordGreaterThanEqual32(SpirvEmitterState& state, std::uint3
 }
 
 std::uint32_t EmitFPAdd32(SpirvEmitterState& state, std::uint32_t arg0, std::uint32_t arg1) {
+    if (state.fusedExactArithmetic) return EmitGlsl<GLSLstd450Fma, IrType::F32>(state, ConstantF32(state, 0x3f800000u), arg0, arg1);
     return Exact(state, EmitNative<spv::OpFAdd, IrType::F32>(state, arg0, arg1));
 }
 
 std::uint32_t EmitFPSub32(SpirvEmitterState& state, std::uint32_t arg0, std::uint32_t arg1) {
+    if (state.fusedExactArithmetic) return EmitGlsl<GLSLstd450Fma, IrType::F32>(state, ConstantF32(state, 0xbf800000u), arg1, arg0);
     return Exact(state, EmitNative<spv::OpFSub, IrType::F32>(state, arg0, arg1));
 }
 
 std::uint32_t EmitFPMul32(SpirvEmitterState& state, std::uint32_t arg0, std::uint32_t arg1) {
+    if (state.fusedExactArithmetic) return EmitGlsl<GLSLstd450Fma, IrType::F32>(state, arg0, arg1, ConstantF32(state, 0x80000000u));
     return Exact(state, EmitNative<spv::OpFMul, IrType::F32>(state, arg0, arg1));
 }
 

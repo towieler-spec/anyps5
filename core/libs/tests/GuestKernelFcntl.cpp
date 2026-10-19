@@ -9,6 +9,9 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#ifndef _WIN32
+#include <sys/stat.h>
+#endif
 extern "C" {
 int APS5_VABI socket_nid_postfix(int, int, int);
 int APS5_VABI __sys_socketex_nid_postfix(const char*, int, int, int);
@@ -386,6 +389,13 @@ static void PipeFlagsRoundTrip() {
 }
 
 static void StandardInputFlags() {
+#ifndef _WIN32
+    struct stat status{};
+    if (::fstat(0, &status) == 0 && S_ISSOCK(status.st_mode)) {
+        std::puts("skipped the standard input checks: the test runner gave this process a socket as standard input");
+        return;
+    }
+#endif
     const int flags = fcntl_nid_postfix(0, GetFlags);
     Require(flags >= 0);
     Require((flags & 3) != WriteOnly);

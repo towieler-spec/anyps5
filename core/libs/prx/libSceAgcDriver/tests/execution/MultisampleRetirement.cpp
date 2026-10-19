@@ -486,6 +486,10 @@ int main() {
         run.IdleRemaps();
         run.RecordedRemap();
         run.SampledRemap();
+        if (!context.storageImageMultisample) {
+            std::puts("retired MSAA allocations stay bounded, recorded clears retain their images, and sampled aliases release their parents after the last batch; the device has no multisampled storage images, so storage promotions are not checked");
+            return 0;
+        }
         run.StorageRemap();
         std::puts("retired MSAA allocations stay bounded, recorded clears and storage promotions retain their images, and sampled aliases release their parents after the last batch");
         return 0;

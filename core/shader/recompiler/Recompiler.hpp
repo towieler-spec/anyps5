@@ -113,7 +113,9 @@ enum class ConservativeZExport : std::uint8_t {
 enum class ColorExportPacking : std::uint8_t {
     None,
     Unorm10_11_11,
-    Float11_11_10
+    Float11_11_10,
+    RawUint,
+    RawSint
 };
 
 enum class RasterPrimitive : std::uint8_t {
@@ -286,9 +288,11 @@ struct SpirvTarget {
     bool vertexSubgroups = true;
     bool float16DenormPreserve = false;
     bool spannedWaves = false;
+    bool fragmentBarycentricBuiltins = false;
     bool robustBufferAccess2 = false;
     bool depthRangeRemap = false;
     bool float32FlushToZero = false;
+    bool fusedExactArithmetic = false;
 };
 
 struct BindingLayout {
@@ -731,7 +735,7 @@ struct BarycentricTessellationShaders {
     RecompileResult evaluation;
 };
 
-[[nodiscard]] BarycentricTessellationShaders BuildBarycentricTessellationShaders(const RecompileResult& vertex, const RecompileResult& fragment, const SpirvTarget& target, std::uint32_t maxFragmentInputComponents);
+[[nodiscard]] BarycentricTessellationShaders BuildBarycentricTessellationShaders(const RecompileResult& vertex, const RecompileResult& fragment, const SpirvTarget& target, std::uint32_t maxFragmentInputComponents, std::uint32_t provokingVertex);
 
 }
 
