@@ -1817,10 +1817,11 @@ if(BUILD_TESTING)
                 "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
     endif()
     add_test(NAME agc_driver_undithered_alpha_to_coverage_state COMMAND agc_driver_graphics_tests --undithered-alpha-to-coverage-state)
+    add_test(NAME agc_driver_depth_bounds_state COMMAND agc_driver_graphics_tests --depth-bounds-state)
     add_test(NAME agc_driver_msaa_dcc_state COMMAND agc_driver_graphics_tests --multisample-dcc-state)
     add_test(NAME agc_driver_unused_viewport_depth COMMAND agc_driver_graphics_tests --unused-viewport-depth)
     set_tests_properties(agc_driver_unused_viewport_depth PROPERTIES TIMEOUT 30)
-    set_tests_properties(agc_driver_undithered_alpha_to_coverage_state PROPERTIES
+    set_tests_properties(agc_driver_undithered_alpha_to_coverage_state agc_driver_depth_bounds_state PROPERTIES
             ENVIRONMENT "ANYPS5_NO_SHADER_CACHE=1" TIMEOUT 30 WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
     add_test(NAME agc_driver_alpha_to_coverage_state COMMAND agc_driver_graphics_tests --alpha-to-coverage-state)
     set_tests_properties(agc_driver_alpha_to_coverage_state PROPERTIES
@@ -1838,7 +1839,7 @@ if(BUILD_TESTING)
     set_tests_properties(agc_driver_dithered_alpha_to_coverage PROPERTIES
             ENVIRONMENT "ANYPS5_NO_SHADER_CACHE=1" SKIP_RETURN_CODE 77 TIMEOUT 30 WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
     if(WIN32)
-        set_tests_properties(agc_driver_alpha_to_coverage_state agc_driver_undithered_alpha_to_coverage_state agc_driver_msaa_dcc_state agc_driver_unused_viewport_depth PROPERTIES ENVIRONMENT_MODIFICATION
+        set_tests_properties(agc_driver_alpha_to_coverage_state agc_driver_undithered_alpha_to_coverage_state agc_driver_depth_bounds_state agc_driver_msaa_dcc_state agc_driver_unused_viewport_depth PROPERTIES ENVIRONMENT_MODIFICATION
                 "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
         set_tests_properties(agc_driver_dithered_alpha_to_coverage ${multisampledDccClearTests} PROPERTIES ENVIRONMENT_MODIFICATION
                 "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
