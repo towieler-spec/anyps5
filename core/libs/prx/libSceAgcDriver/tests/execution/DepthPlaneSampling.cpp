@@ -434,8 +434,9 @@ void RefusalCase(AgcDriver::VulkanDevice& device, GuestBlock& block) {
 }
 }
 
-int main() {
+int main(int argc, char** argv) {
     try {
+        const bool evicting = argc > 1 && std::string(argv[1]) == "--evicting";
         GuestBlock block;
         const auto device = OpenVulkanTestDevice();
         if (!device) return VulkanTestSkipped;
@@ -452,6 +453,10 @@ int main() {
         PaddedD16CubeCase(*device, block, output);
         BaseSliceCase(*device, block, output);
         RefusalCase(*device, block);
+        if (evicting) {
+            const auto kept = AgcDriver::Graphics::DepthPlaneCopyCount();
+            Require(kept == 1, std::to_string(kept) + " depth plane copies were kept with a 1 MiB budget, expected only the newest");
+        }
         std::puts("depth plane sampling tests passed");
         return 0;
     } catch (const std::exception& error) {
