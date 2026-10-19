@@ -3642,6 +3642,18 @@ bool StorageTexture::pendingUnitInside(std::uint64_t address, std::size_t bytes)
     return false;
 }
 
+namespace {
+
+void waitForIdlePublish(const char* reason) {
+    if (reason == nullptr || std::strcmp(reason, "idle") != 0 || Recorder::InCompletion()) return;
+    if (auto* recorder = Recorder::Active()) {
+        Recorder::CountSync(0);
+        recorder->Sync();
+    }
+}
+
+}
+
 bool StorageTexture::FlushPending(std::uint64_t address, std::size_t bytes, const StorageTexture* except, const char* reason, PublishScope scope, bool* published) {
     if (published != nullptr) *published = false;
     if (AgcDriver::DriverDetail::DrawPipeline::HeldReads(address, bytes)) {
@@ -3734,6 +3746,7 @@ bool StorageTexture::FlushPending(std::uint64_t address, std::size_t bytes, cons
     // import, so they are published under the same hold, after every store.
     if (scope != PublishScope::None) {
         const auto units = PublishShadow(address, bytes, scope, PublishReasonFor(reason));
+        if (units != 0) waitForIdlePublish(reason);
         if (published != nullptr) *published = units != 0;
     }
     return true;
@@ -3899,7 +3912,9 @@ void StorageTexture::awaitStoredSave(const std::vector<bool>* layers) {
 bool StorageTexture::PublishShadowsOnly(std::uint64_t address, std::size_t bytes, PublishScope scope, const char* reason) {
     if (scope == PublishScope::None || !AnyShadowedOverlaps(address, bytes)) return false;
     std::lock_guard gpu(GuestMemory::GpuMutex());
-    return PublishShadow(address, bytes, scope, PublishReasonFor(reason)) != 0;
+    if (PublishShadow(address, bytes, scope, PublishReasonFor(reason)) == 0) return false;
+    waitForIdlePublish(reason);
+    return true;
 }
 
 namespace {
