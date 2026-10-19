@@ -4,6 +4,7 @@
 #include <stdexcept>
 #include <filesystem>
 #include <vector>
+#include <cstdio>
 
 #include "general/LogMacros.hpp"
 #include "general/VabiMacros.hpp"
@@ -16,6 +17,10 @@ extern "C" bool StopAtPrefixLetter_nid_no_patch(const char* str, char** endptr, 
 extern "C" int KeepHostStandardError_nid_no_patch();
 extern "C" int HostStandardError_nid_no_patch();
 extern "C" int KeepHostStandardOutput_nid_no_patch();
+#else
+extern "C" bool AdoptHostStandardStream_nid_no_patch(int standard, int saved);
+extern "C" std::FILE* HostStandardOutputFile_nid_no_patch();
+extern "C" std::FILE* HostStandardErrorFile_nid_no_patch();
 #endif
 
 extern "C" std::filesystem::path ResolvePath_nid_no_patch(const char* path);
