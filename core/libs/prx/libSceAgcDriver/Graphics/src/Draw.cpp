@@ -10,6 +10,7 @@
 #include "prx/libSceAgcDriver/Graphics/include/Recorder.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/TextureFormat.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/UnitShadow.hpp"
+#include "prx/libSceAgcDriver/Graphics/include/RenderOverride.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/GuestBufferMemory.hpp"
 #include "prx/libSceAgcDriver/Execution/include/GuestMemory.hpp"
 #include "prx/libSceAgcDriver/Execution/include/CaptureTrace.hpp"
@@ -2231,7 +2232,7 @@ void Draw(const Context& context, const State& state, const Pm4::DrawParameters&
             ReadColorTarget(color, binding.transfer->Bytes());
         }
         // A fast-cleared DCC target holds its clear value wherever the draw does not write.
-        if (color.dccAddress != 0) {
+        if (color.dccAddress != 0 && !CurrentRenderOverride().disableDcc) {
             const auto keys = CurrentDccKeys(color.dccAddress, colorLayout.Bytes());
             if (IsDccClear(keys)) {
                 const auto pixels = binding.gpuTiling ? binding.tiled->Bytes() : binding.transfer->Bytes();
@@ -2411,7 +2412,21 @@ void Draw(const Context& context, const State& state, const Pm4::DrawParameters&
         masked->colors[index].format = AttachmentProxyFormat(context, state.colors[index].format);
         masked->blends.at(state.colors[index].exportIndex).colorWriteMask &= VK_COLOR_COMPONENT_R_BIT;
     }
-    const State& pipelineState = masked.has_value() ? *masked : state;
+    const auto renderOverride = CurrentRenderOverride();
+    const State& baseState = masked.has_value() ? *masked : state;
+    std::optional<State> overriddenState;
+    const State* pipelineSource = &baseState;
+    if (renderOverride.ChangesDrawState()) {
+        overriddenState = baseState;
+        if (renderOverride.disableCull) overriddenState->cullMode = VK_CULL_MODE_NONE;
+        if (renderOverride.disableDepthTest) overriddenState->depthTest = false;
+        if (renderOverride.forceDepthWrite) overriddenState->depthWrite = true;
+        if (renderOverride.disableBlend) {
+            for (auto& blend : overriddenState->blends) blend.blendEnable = VK_FALSE;
+        }
+        pipelineSource = &*overriddenState;
+    }
+    const State& pipelineState = *pipelineSource;
     static const bool verifySetLayouts = std::getenv("APS5_VERIFY_SET_LAYOUTS") != nullptr;
     if (verifySetLayouts && context.descriptorCache != nullptr) {
         const auto described = DescribeSetLayouts(context, shaders);

@@ -80,11 +80,13 @@ public:
     static std::uint64_t DispatchCacheBytes();
     static ShaderMemory::PendingWrite QueryPendingSpan(std::uint64_t address, std::size_t bytes, std::span<std::byte> known);
     std::shared_ptr<const ShaderRegistry> RegisteredShaders();
+    void HotReloadShaders();
 
 private:
     friend class SampledReadScope;
     friend struct PendingView;
     friend struct PacketTimer;
+    void checkShaderHotReload();
     void stop();
     Driver();
     void rethrowFailure() const;
