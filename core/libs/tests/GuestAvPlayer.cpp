@@ -18,6 +18,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <set>
 #include <thread>
 #include <vector>
 #include "SceTypes.hpp"
@@ -958,38 +959,72 @@ void TestVp9OpusPlayback() {
         file.write(reinterpret_cast<const char*>(WebmMovie.data()), static_cast<std::streamsize>(WebmMovie.size()));
         Check(static_cast<bool>(file), "cannot write the WebM movie");
     }
-    Events events;
-    AvPlayerInitData init = InitData(&events);
-    auto* player = sceAvPlayerInit(&init);
-    Check(player != nullptr, "WebM init failed");
-    Check(sceAvPlayerAddSource(player, "/app0/avplayer.webm") == 0, "WebM add source failed");
-    Check(WaitFor([&] { return events.Seen(EventReady); }), "WebM ready event missing");
-    Check(sceAvPlayerStreamCount(player) == 2, "unexpected WebM stream count");
-    AvPlayerStreamInfo video{};
-    Check(sceAvPlayerGetStreamInfo(player, 0, &video) == 0 && video.type == 1 && video.details.video.width == 112 && video.details.video.height == 64, "unexpected VP9 stream");
-    AvPlayerStreamInfo audio{};
-    Check(sceAvPlayerGetStreamInfo(player, 1, &audio) == 0 && audio.type == 0 && audio.details.audio.channel_count == 2 && audio.details.audio.sample_rate == SampleRate, "unexpected Opus stream");
-    Check(sceAvPlayerEnableStream(player, 0) == 0 && sceAvPlayerEnableStream(player, 1) == 0, "enable WebM streams failed");
-    Check(sceAvPlayerStart(player) == 0, "WebM start failed");
-    AvPlayerFrameInfoEx frame{};
-    AvPlayerFrameInfo sound{};
-    int frames = 0;
-    int sounds = 0;
-    Check(WaitFor([&] {
-        if (sceAvPlayerGetAudioData(player, &sound)) {
-            CheckEnglishAudio(sound);
-            ++sounds;
-        }
-        if (sceAvPlayerGetVideoDataEx(player, &frame)) {
-            CheckVideoFrame(frame);
-            ++frames;
-        }
-        return !sceAvPlayerIsActive(player);
-    }), "WebM playback never ended");
-    Check(frames >= 5 && sounds >= 2, "WebM delivered " + std::to_string(frames) + " frames and " + std::to_string(sounds) + " audio chunks");
-    Check(sceAvPlayerClose(player) == 0, "WebM close failed");
-    std::lock_guard lock(allocations.mutex);
-    Check(allocations.blocks.empty(), "WebM allocations leaked");
+    {
+        Events events;
+        AvPlayerInitData init = InitData(&events);
+        auto* player = sceAvPlayerInit(&init);
+        Check(player != nullptr, "WebM init failed (video pass)");
+        Check(sceAvPlayerAddSource(player, "/app0/avplayer.webm") == 0, "WebM add source failed (video pass)");
+        Check(WaitFor([&] { return events.Seen(EventReady); }), "WebM ready event missing (video pass)");
+        Check(sceAvPlayerSetAvSyncMode(player, 1) == 0, "WebM sync mode rejected (video pass)");
+        Check(sceAvPlayerEnableStream(player, 0) == 0, "enable WebM video stream failed (video pass)");
+        Check(sceAvPlayerStart(player) == 0, "WebM start failed (video pass)");
+        AvPlayerFrameInfoEx frame{};
+        std::set<int> seen;
+        std::uint64_t last = 0;
+        Check(WaitFor([&] {
+            if (sceAvPlayerGetVideoDataEx(player, &frame)) {
+                CheckVideoFrame(frame);
+                const int index = FrameIndex(frame.timestamp);
+                Check(seen.insert(index).second, "video frame repeated in no-sync video-only playback");
+                if (!seen.empty() && seen.size() > 1) Check(frame.timestamp > last, "video timestamps not increasing (video pass)");
+                last = frame.timestamp;
+            }
+            return !sceAvPlayerIsActive(player);
+        }), "WebM video-only playback never ended");
+        Check(!seen.empty() && *seen.begin() == 0 && *seen.rbegin() + 1 == static_cast<int>(seen.size()),
+              "no-sync video-only playback dropped frames: first " + std::to_string(*seen.begin()) + " last " + std::to_string(*seen.rbegin()) + " count " + std::to_string(seen.size()));
+        Check(sceAvPlayerClose(player) == 0, "WebM close failed (video pass)");
+        std::lock_guard lock(allocations.mutex);
+        Check(allocations.blocks.empty(), "WebM allocations leaked (video pass)");
+    }
+    {
+        Events events;
+        AvPlayerInitData init = InitData(&events);
+        auto* player = sceAvPlayerInit(&init);
+        Check(player != nullptr, "WebM init failed");
+        Check(sceAvPlayerAddSource(player, "/app0/avplayer.webm") == 0, "WebM add source failed");
+        Check(WaitFor([&] { return events.Seen(EventReady); }), "WebM ready event missing");
+        Check(sceAvPlayerStreamCount(player) == 2, "unexpected WebM stream count");
+        AvPlayerStreamInfo video{};
+        Check(sceAvPlayerGetStreamInfo(player, 0, &video) == 0 && video.type == 1 && video.details.video.width == 112 && video.details.video.height == 64, "unexpected VP9 stream");
+        AvPlayerStreamInfo audio{};
+        Check(sceAvPlayerGetStreamInfo(player, 1, &audio) == 0 && audio.type == 0 && audio.details.audio.channel_count == 2 && audio.details.audio.sample_rate == SampleRate, "unexpected Opus stream");
+        Check(sceAvPlayerEnableStream(player, 0) == 0 && sceAvPlayerEnableStream(player, 1) == 0, "enable WebM streams failed");
+        Check(sceAvPlayerStart(player) == 0, "WebM start failed");
+        AvPlayerFrameInfoEx frame{};
+        AvPlayerFrameInfo sound{};
+        int frames = 0;
+        int sounds = 0;
+        std::uint64_t lastVideo = 0;
+        Check(WaitFor([&] {
+            if (sceAvPlayerGetAudioData(player, &sound)) {
+                CheckEnglishAudio(sound);
+                ++sounds;
+            }
+            if (sceAvPlayerGetVideoDataEx(player, &frame)) {
+                CheckVideoFrame(frame);
+                if (frames > 0) Check(frame.timestamp > lastVideo, "video timestamps not increasing");
+                lastVideo = frame.timestamp;
+                ++frames;
+            }
+            return !sceAvPlayerIsActive(player);
+        }), "WebM playback never ended");
+        Check(sounds >= 2 && frames >= 1, "WebM delivered " + std::to_string(frames) + " frames and " + std::to_string(sounds) + " audio chunks");
+        Check(sceAvPlayerClose(player) == 0, "WebM close failed");
+        std::lock_guard lock(allocations.mutex);
+        Check(allocations.blocks.empty(), "WebM allocations leaked");
+    }
 }
 
 void TestChangeStream() {
