@@ -1,0 +1,15 @@
+add_library(libSceVideoRecordingP SHARED EXCLUDE_FROM_ALL Export.cpp)
+target_include_directories(libSceVideoRecordingP PRIVATE ${LIBS_INCLUDE_DIR})
+configure_windows_unwind(libSceVideoRecordingP)
+
+if(BUILD_TESTING)
+    add_test_executable(guest_video_recording_p_tests ${LIBS_INCLUDE_DIR}/tests/GuestVideoRecordingP.cpp)
+    target_include_directories(guest_video_recording_p_tests PRIVATE ${LIBS_INCLUDE_DIR})
+    target_link_libraries(guest_video_recording_p_tests PRIVATE libSceVideoRecordingP libc)
+    configure_windows_unwind(guest_video_recording_p_tests)
+    add_test(NAME guest_video_recording_p_bgra_to_nv12 COMMAND guest_video_recording_p_tests)
+    if(WIN32)
+        set_tests_properties(guest_video_recording_p_bgra_to_nv12 PROPERTIES ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libSceVideoRecordingP>")
+    endif()
+endif()
