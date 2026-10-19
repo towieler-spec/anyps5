@@ -52,6 +52,8 @@
 
 ### Functional
 
+- [_FSinh and _FCosh](../../../core/libs/prx/libc/src/Math.cpp) (libc) finite results are not verified bit for bit against the console: the scaled product uses the host's binary64 hyperbolic function before rounding to binary32, rather than the float rational and `_FExp` sequence in PRAGMATA's bundled `libc.prx`. NaN preference and payloads, signed zeros, infinite operands and the range-error thresholds follow that binary's instructions; the system `libSceLibcInternal` implementation and nondefault flush-to-zero modes are unverified.
+
 - [sscanf_s and vsscanf_s](../../../core/libs/prx/libc/src/Formatting.cpp) (libc) return `EOF` when a reached conversion has a null destination, stopping before further assignments, following C11 K.3.5.3.7 and K.3.5.3.14. Earlier assignments are retained. The constraint handler is not invoked, and console behaviour is unverified.
 
 - [Guest time conversions](../../../core/libs/prx/libc/src/Time.cpp) rewrite the host process `TZ` when a guest changes its own `TZ`, so other host consumers of that variable (including libSceRtc local time) shift too; code outside libc does not take the zone lock. Zone syntax follows the host C runtime, not FreeBSD: Windows only accepts the `std offset [dst]` form, treats an empty guest `TZ` as `UTC0` and reads `:Europe/Berlin` as an abbreviation (for example `rop`); only Linux honours zone file names. If the guest accepts a `TZ` value that the host rejects (on Windows, for example, one longer than the host environment limit), conversions throw `std::runtime_error`. A `tm_zone` saved before a `TZ` change can refer to storage now holding the new zone name, changing `%Z` output.
