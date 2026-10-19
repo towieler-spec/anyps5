@@ -79,7 +79,7 @@ struct GuestModuleInput {
 
 class GuestModuleBuilder {
 public:
-    std::vector<GuestArtifact> Build(const std::filesystem::path& inputPath, const std::filesystem::path& outputPath, Domain::SysVDynamicSection& dynamic, bool windows, bool macos, bool toIntel, bool toRosetta, ISyscallScanner& syscallScanner, bool lazyBinding, const std::string& runPath, const std::set<std::string>& excludedModules, const std::filesystem::path& root, const std::vector<std::filesystem::path>& runtimeDirectories, std::vector<GuestModuleInput> modules, Domain::IProgress& progress) const;
+    std::vector<GuestArtifact> Build(const std::filesystem::path& inputPath, const std::filesystem::path& outputPath, Domain::SysVDynamicSection& dynamic, bool windows, bool macos, bool toIntel, bool toRosetta, ISyscallScanner& syscallScanner, bool lazyBinding, const std::string& runPath, const std::set<std::string>& excludedModules, const std::filesystem::path& root, const std::vector<std::filesystem::path>& runtimeDirectories, bool sharedModules, std::vector<GuestModuleInput> modules, Domain::IProgress& progress) const;
 };
 
 }

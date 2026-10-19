@@ -28,6 +28,7 @@ struct ConversionOptions {
     std::set<std::string> ExcludedModules;
     std::vector<GamePatch::PatchEntry> Patches;
     std::string TargetName;
+    bool SharedGuestModules = false;
 };
 
 struct ConversionInput {

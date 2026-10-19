@@ -57,7 +57,7 @@ std::string ModuleStem(std::string name, const bool windows) {
 
 }
 
-std::vector<GuestArtifact> GuestModuleBuilder::Build(const std::filesystem::path& inputPath, const std::filesystem::path& outputPath, Domain::SysVDynamicSection& dynamic, const bool windows, const bool macos, const bool toIntel, const bool toRosetta, ISyscallScanner& syscallScanner, const bool lazyBinding, const std::string& runPath, const std::set<std::string>& excludedModules, const std::filesystem::path& root, const std::vector<std::filesystem::path>& runtimeDirectories, std::vector<GuestModuleInput> modules, Domain::IProgress& progress) const {
+std::vector<GuestArtifact> GuestModuleBuilder::Build(const std::filesystem::path& inputPath, const std::filesystem::path& outputPath, Domain::SysVDynamicSection& dynamic, const bool windows, const bool macos, const bool toIntel, const bool toRosetta, ISyscallScanner& syscallScanner, const bool lazyBinding, const std::string& runPath, const std::set<std::string>& excludedModules, const std::filesystem::path& root, const std::vector<std::filesystem::path>& runtimeDirectories, const bool sharedModules, std::vector<GuestModuleInput> modules, Domain::IProgress& progress) const {
     std::vector<std::filesystem::path> paths;
     std::map<std::filesystem::path, GuestImage> discovered;
     progress.Report({Domain::ProgressStage::Modules, {}, 0, modules.size()});
@@ -369,6 +369,7 @@ std::vector<GuestArtifact> GuestModuleBuilder::Build(const std::filesystem::path
         runtime.Path = relativeDirectory + "/" + image.OutputName;
         runtime.Names = {Io::Utf8Path(image.SourcePath.filename()), image.Soname};
         runtime.DeferInitialization = deferred(index);
+        runtime.ExportInitialization = sharedModules && isRuntime(index);
         std::vector<std::uint8_t> output;
         if (windows) output = Elfpatcher::GuestModuleWriter().WriteWindows(image, runtime);
         else {

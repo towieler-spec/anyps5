@@ -55,7 +55,9 @@ Runtime-loaded Windows modules export `__aps5_guest_initialize`: the entry RVA, 
 
 While initialization runs, the count is `UINT32_MAX` and the entry word holds the initializing Windows thread ID. A different thread waits on the loader's condition variable; the owning thread can recursively open its module. Completion clears both words, restores the table's original page protection and wakes waiters. An exception leaves the count at `UINT32_MAX` with thread ID 0, so another load rejects that image until it is unloaded. The table's file format is unchanged and its initializer slots remain intact.
 
-[GuestDeferredModule.cpp](../../core/libs/tests/GuestDeferredModule.cpp) checks repeated loads at the same base, multiple guest references, an external native reference, concurrent initialization and recursive loading. The Windows fixture uses the same table layout as the relinker and reports its entry and constructor calls separately.
+When `--executable` converts several executables, every module of a `--module-dir` directory exports the table, in a writable section, so the shared module does not depend on which executable defers it ([GuestModuleBuilder.cpp](../../core/relinker/relinker/src/guest/GuestModuleBuilder.cpp)). An executable that initializes such a module at startup clears its first two words before it runs any module initializer ([WindowsGuestStartup.cpp](../../core/relinker/elfpatcher/src/windows/WindowsGuestStartup.cpp)), so a later load of that module does not initialize it again.
+
+[GuestDeferredModule.cpp](../../core/libs/tests/GuestDeferredModule.cpp) checks repeated loads at the same base, multiple guest references, an external native reference, concurrent initialization and recursive loading, with the table in a read-only and in a writable section. With the writable table it also checks that a load after the first two words were cleared, as an executable's startup clears them, runs neither the entry nor the initializers. The Windows fixture uses the same table layout as the relinker and reports its entry and constructor calls separately.
 
 ## Windows allocator
 

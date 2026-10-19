@@ -175,6 +175,7 @@ def main():
                 assert not any("Plugins" in name for name in needed_libraries(output.read_bytes())), needed_libraries(output.read_bytes())
             if windows:
                 assert "__aps5_guest_initialize" in pe_export_names(artifact.read_bytes())
+                assert not next(flags for name, _, _, _, flags in pe_sections(artifact.read_bytes()) if name == b".ginit") & 0x80000000
                 (case / "sce_module" / "bundled.prx").write_bytes(module_with_symbol(True))
                 (plugins / "plugin.prx").write_bytes(module_with_symbol(True).replace(b"shared#A#B", b"plugin#A#B"))
                 result, output = convert(case, windows, ["--module-dir", "Media/Plugins"])

@@ -12,9 +12,9 @@ from test_guest_module_directories import module_with_symbol, needed_libraries
 NEEDED = b"needed.prx"
 
 
-def executable_with_needed(needed=NEEDED, repeats=1):
+def executable_with_needed(needed=NEEDED, repeats=1, others=()):
     image = main_fixture()
-    strings = b"\0" + needed + b"\0"
+    strings = b"\0" + b"".join(name + b"\0" for name in (needed, *others))
     image[0x4800:0x4800 + len(strings)] = strings
     tags = []
     for position in range(0x4600, 0x4600 + 0x200, 16):
@@ -23,7 +23,7 @@ def executable_with_needed(needed=NEEDED, repeats=1):
             break
         tags.append((tag, value))
     tags = [(5, 0x4800) if tag == 5 else (10, len(strings)) if tag == 10 else (tag, value) for tag, value in tags]
-    tags += [(1, 1)] * repeats + [(0, 0)]
+    tags += [(1, 1)] * repeats + [(1, strings.index(b"\0" + name + b"\0") + 1) for name in others] + [(0, 0)]
     for index, tag in enumerate(tags):
         struct.pack_into("<qQ", image, 0x4600 + index * 16, *tag)
     struct.pack_into("<QQ", image, 120 + 32, len(tags) * 16, len(tags) * 16)

@@ -68,6 +68,7 @@ ConvertedExecutable Convert(const Cli::Args& args, const std::string& inputPath,
     options.ExcludedModules = args.excludedSceModules;
     options.Patches = patches;
     options.TargetName = targetName;
+    options.SharedGuestModules = !args.executables.empty();
     progress.IncludeFile(Io::Utf8Path(input.InputPath));
     progress.IncludeFile(Io::Utf8Path(input.OutputPath));
     for (const auto& module : input.Modules) progress.IncludeFile(Io::Utf8Path(module.Path));

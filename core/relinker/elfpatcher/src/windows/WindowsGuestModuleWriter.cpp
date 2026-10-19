@@ -148,11 +148,13 @@ std::vector<std::uint8_t> GuestModuleWriter::WriteWindows(const Relinker::GuestI
         nextRva = AlignRva(nextRva + tlsExports.Data.size());
         sections.push_back(std::move(tlsExports));
     }
-    if (runtime.DeferInitialization) {
+    if (runtime.DeferInitialization || runtime.ExportInitialization) {
         PeSection lifecycle{".ginit", nextRva, SectionRead | 0x40u, {}};
         Io::AppendU32(lifecycle.Data, guest.Init == 0 ? 0 : image.GetRva(guest.Init));
         Io::AppendU32(lifecycle.Data, CheckedRva(guest.InitArray.size()));
         for (const auto slot : guest.InitArray) Io::AppendU32(lifecycle.Data, image.GetRva(slot, 8));
+        if (runtime.ExportInitialization) lifecycle.Characteristics |= SectionWrite;
+        runtime.InitializationTableRva = nextRva;
         if (!exports.emplace(Relinker::GuestInitializeExport, nextRva).second) throw Domain::RelinkerException("Duplicate guest export: " + std::string(Relinker::GuestInitializeExport));
         nextRva = AlignRva(nextRva + lifecycle.Data.size());
         sections.push_back(std::move(lifecycle));

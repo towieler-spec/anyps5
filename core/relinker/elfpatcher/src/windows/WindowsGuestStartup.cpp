@@ -29,6 +29,13 @@ void WindowsGuestStartup::callLifecycle(WindowsStubEmitter& code, const std::uin
 
 void WindowsGuestStartup::Initialize(WindowsStubEmitter& code, const std::vector<Domain::GuestRuntime>& modules, const std::uint32_t handles) const {
     for (std::size_t index = 0; index < modules.size(); ++index) {
+        if (modules[index].DeferInitialization || modules[index].InitializationTableRva == 0) continue;
+        code.Rip({0x48, 0x8b, 0x05}, CheckedRva(handles + index * 8));
+        code.Emit({0x48, 0xc7, 0x80});
+        code.U32(modules[index].InitializationTableRva);
+        code.U32(0);
+    }
+    for (std::size_t index = 0; index < modules.size(); ++index) {
         if (modules[index].DeferInitialization) continue;
         const auto handle = CheckedRva(handles + index * 8);
         callLifecycle(code, handle, modules[index].InitRva);

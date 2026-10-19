@@ -53,11 +53,13 @@ static HMODULE Native(int id) {
     return native;
 }
 
+static bool writable = false;
+
 static void MetadataProtected(int id) {
     const auto table = GetProcAddress(Native(id), "__aps5_guest_initialize");
     MEMORY_BASIC_INFORMATION information{};
     Require(table && VirtualQuery(reinterpret_cast<const void*>(table), &information, sizeof(information)), "query init metadata");
-    Require(information.Protect == PAGE_READONLY, "init metadata protection restored");
+    Require(writable ? information.Protect == PAGE_WRITECOPY || information.Protect == PAGE_READWRITE : information.Protect == PAGE_READONLY, "init metadata protection restored");
 }
 
 static void APS5_VABI Reenter(const char* path) {
@@ -67,10 +69,11 @@ static void APS5_VABI Reenter(const char* path) {
 }
 
 int main(int argc, char** argv) {
-    Require(argc == 3, "fixture and mode required");
+    Require(argc == 3 || (argc == 4 && std::string(argv[3]) == "writable"), "fixture and mode required");
     const auto file = std::filesystem::absolute(argv[1]);
     const auto path = file.string();
     const std::string mode = argv[2];
+    writable = argc == 4;
     if (mode == "reload") {
         HMODULE firstBase = nullptr;
         for (unsigned cycle = 0; cycle < 3; ++cycle) {
@@ -138,5 +141,16 @@ int main(int argc, char** argv) {
         Counts(id, 1, 1);
         MetadataProtected(id);
         Close(id);
+    } else if (mode == "cleared" && writable) {
+        HMODULE pin = LoadLibraryW(file.c_str());
+        Require(pin != nullptr, "native pin");
+        auto* table = reinterpret_cast<std::uint32_t*>(GetProcAddress(pin, "__aps5_guest_initialize"));
+        Require(table != nullptr, "find init metadata");
+        table[0] = 0;
+        table[1] = 0;
+        const int id = Open(path, nullptr, false);
+        Counts(id, 0, 0);
+        Close(id);
+        Require(FreeLibrary(pin) && GetModuleHandleW(file.c_str()) == nullptr, "release native pin");
     } else Require(false, "unknown fixture mode");
 }

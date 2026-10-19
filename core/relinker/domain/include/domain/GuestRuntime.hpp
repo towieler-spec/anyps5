@@ -30,6 +30,8 @@ struct GuestRuntime {
     std::vector<std::string> UnmatchedImportModules;
     std::set<std::string> ZeroReturnExports;
     bool DeferInitialization = false;
+    bool ExportInitialization = false;
+    std::uint32_t InitializationTableRva = 0;
 };
 
 }
