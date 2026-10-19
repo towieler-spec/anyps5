@@ -473,6 +473,7 @@ Pipeline::Pipeline(const Context& context, const State& state, const VertexInput
         dynamic.pDynamicStates = dynamicStates.data();
         VkPipelineRasterizationStateCreateInfo raster{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
         raster.polygonMode = VK_POLYGON_MODE_FILL;
+        raster.rasterizerDiscardEnable = state.rasterizerDiscard ? VK_TRUE : VK_FALSE;
         raster.depthClampEnable = state.depthClamp && context.depthClamp ? VK_TRUE : VK_FALSE;
         Require(!state.depthBiasPerFace || (depthBias && state.cullMode == VK_CULL_MODE_NONE), "per-face depth bias needs both faces rasterized");
         raster.cullMode = state.depthBiasPerFace ? VK_CULL_MODE_BACK_BIT : state.cullMode;
@@ -722,10 +723,11 @@ void Pipeline::Begin(VkCommandBuffer commands, const Framebuffer& framebuffer, V
         VkRenderingInfoKHR rendering{VK_STRUCTURE_TYPE_RENDERING_INFO_KHR};
         rendering.renderArea = {{0, 0}, extent};
         rendering.layerCount = state.renderLayers;
-        rendering.colorAttachmentCount = static_cast<std::uint32_t>(colors.size());
-        rendering.pColorAttachments = colors.empty() ? nullptr : colors.data();
-        if (depthFormat != VK_FORMAT_UNDEFINED) rendering.pDepthAttachment = &depth;
-        if (depthFormat != VK_FORMAT_UNDEFINED && HasStencil(depthFormat)) rendering.pStencilAttachment = &depth;
+        const bool outputs = !state.rasterizerDiscard;
+        rendering.colorAttachmentCount = outputs ? static_cast<std::uint32_t>(colors.size()) : 0u;
+        rendering.pColorAttachments = outputs && !colors.empty() ? colors.data() : nullptr;
+        if (outputs && depthFormat != VK_FORMAT_UNDEFINED) rendering.pDepthAttachment = &depth;
+        if (outputs && depthFormat != VK_FORMAT_UNDEFINED && HasStencil(depthFormat)) rendering.pStencilAttachment = &depth;
         context.Resolved(&DeviceFunctions::cmdBeginRendering, "vkCmdBeginRenderingKHR")(commands, &rendering);
         Continue(commands, state);
         return;
@@ -909,6 +911,7 @@ void pipelineKey(std::vector<std::byte>& key, const Context& context, const Stat
         append(key, front);
         append(key, back);
     }
+    append(key, state.rasterizerDiscard);
     append(key, state.stages.mesh.has_value());
     if (state.stages.mesh) {
         const auto& mesh = *state.stages.mesh;
@@ -1106,7 +1109,7 @@ std::shared_ptr<Pipeline> CachedPipeline(const Context& context, const State& st
         }
     }
     if (created != nullptr) *created = true;
-    if (PipelineJournalEnabled() && !PipelineJournalReplaying()) RecordGraphicsPipeline(MakeGraphicsPipelineRecipe(state, vertexInput, resources, shaders, attachmentLayout), shaders);
+    if (PipelineJournalEnabled() && !PipelineJournalReplaying() && state.tessellationCapture == nullptr) RecordGraphicsPipeline(MakeGraphicsPipelineRecipe(state, vertexInput, resources, shaders, attachmentLayout), shaders);
     return pipeline;
 }
 

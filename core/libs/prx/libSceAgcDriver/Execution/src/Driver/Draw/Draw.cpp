@@ -11,6 +11,8 @@
 #include <algorithm>
 #include <bit>
 #include <cstdlib>
+#include <map>
+#include <mutex>
 #include <cstdio>
 #include <cstring>
 
@@ -216,13 +218,9 @@ DrawVerdict Driver::draw(QueueState& queue, std::span<const std::uint32_t> packe
     phaseTiming.Phase(DrawRowDecode);
 
     const auto locate = [&](std::uint32_t location) -> std::optional<std::pair<std::size_t, std::size_t>> {
-        if (location == 0x280u) return std::nullopt;
-        for (std::size_t i = 0; i < programs.size(); ++i) {
-            if (roles[i] == Role::Fragment || roles[i] == Role::GeometryBack || location < programs[i].userDataBase) continue;
-            const auto word = location - programs[i].userDataBase + (8u - programs[i].firstUserSgpr);
-            if (word < programs[i].userData.size()) return std::make_pair(i, static_cast<std::size_t>(word));
-        }
-        return std::nullopt;
+        const auto words = UserDataWords(programs, roles, location);
+        if (words.empty()) return std::nullopt;
+        return words.front();
     };
     if (drawParameters.indirect) {
         auto& indirect = *drawParameters.indirect;
@@ -237,13 +235,11 @@ DrawVerdict Driver::draw(QueueState& queue, std::span<const std::uint32_t> packe
     }
     std::vector<ShaderRecompiler::MemoryRegion> memory;
     memory.reserve(2 * programs.size() + 32);
+    AppendProgramMemory(memory, programs);
     std::vector<ShaderRecompiler::LinkedProgram> linked;
     linked.reserve(programs.size());
     for (std::size_t i = 0; i < programs.size(); ++i) {
         const auto& program = programs[i];
-        for (const auto& region : program.memory) {
-            if (!region.bytes.empty()) memory.push_back(region);
-        }
         linked.push_back({roles[i], program.binary, program.userDataBase, program.firstUserSgpr, program.userData});
     }
     timing.Mark("prepare");
@@ -471,6 +467,20 @@ DrawVerdict Driver::draw(QueueState& queue, std::span<const std::uint32_t> packe
         phaseTiming.Phase(DrawRowRectList);
     };
     if (graphics.rectList) buildRectList();
+    if (graphics.stages.tessellationGeometry) {
+        static std::mutex captureMutex;
+        static std::map<std::pair<std::uint32_t, std::uint32_t>, ShaderRecompiler::RecompileResult> captureShaders;
+        const auto& geometry = *graphics.stages.tessellationGeometry;
+        {
+            std::lock_guard captureLock(captureMutex);
+            auto found = captureShaders.find({geometry.esgsItemSize, geometry.primitivesPerGroup});
+            if (found == captureShaders.end()) found = captureShaders.emplace(std::pair{geometry.esgsItemSize, geometry.primitivesPerGroup}, ShaderRecompiler::BuildTessellationCaptureGeometryShader(geometry, localDevice->Target(), localDevice->GeometryLimits())).first;
+            results.push_back(found->second);
+        }
+        const auto evaluation = std::ranges::find_if(stages, [](const Graphics::CompiledShader& stage) { return stage.stage == Stage::TessellationEvaluation; });
+        require(evaluation != stages.end(), "tessellation followed by a geometry stage has no domain program");
+        stages.insert(std::next(evaluation), Graphics::CompiledShader{Stage::Geometry, &results.back(), 0});
+    }
     if (!programs.empty() && programResults.back() != nullptr && programResults.back()->barycentricEmulation.active) {
         require(!graphics.rectList && graphics.stages.path == Graphics::ShaderPath::Vertex && programs.size() == 2 && programResults[0] != nullptr && stages.size() == 2, "a pixel shader that reads barycentrics without VK_KHR_fragment_shader_barycentric needs a vertex shader before it");
         const auto geometryLimits = localDevice->GeometryLimits();
@@ -529,9 +539,9 @@ DrawVerdict Driver::draw(QueueState& queue, std::span<const std::uint32_t> packe
         std::vector<Pm4::DrawArguments> records;
         for (std::uint32_t record = 0; record < count; ++record) records.push_back(Pm4::ReadDrawArguments(indirect, record));
         Graphics::CountIndirectDraw(*indirectCpu, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - readStart).count());
-        const auto baseVertexWord = locate(indirect.baseVertexLocation);
-        const auto startInstanceWord = locate(indirect.startInstanceLocation);
-        const auto drawIndexWord = indirect.drawIndexEnabled ? locate(indirect.drawIndexLocation) : std::nullopt;
+        const auto baseVertexWords = UserDataWords(programs, roles, indirect.baseVertexLocation);
+        const auto startInstanceWords = UserDataWords(programs, roles, indirect.startInstanceLocation);
+        const auto drawIndexWords = indirect.drawIndexEnabled ? UserDataWords(programs, roles, indirect.drawIndexLocation) : std::vector<std::pair<std::size_t, std::size_t>>{};
         const auto drawable = [&](const Pm4::DrawArguments& arguments) { return arguments.count != 0 && arguments.instances != 0 && (!drawParameters.indexed || arguments.firstVertexOrIndex < drawParameters.indexCount); };
         std::size_t lastDrawable = records.size();
         for (std::size_t record = 0; record < records.size(); ++record) {
@@ -542,14 +552,15 @@ DrawVerdict Driver::draw(QueueState& queue, std::span<const std::uint32_t> packe
             if (traceIndirect) std::fprintf(stderr, "[draw]   record %u: count %u instances %u first %u vertexOffset %u startInstance %u\n", record, arguments.count, arguments.instances, arguments.firstVertexOrIndex, arguments.vertexOffset, arguments.firstInstance);
             if (arguments.count == 0 || arguments.instances == 0) continue;
             std::set<std::size_t> patched;
-            const auto patch = [&](const std::optional<std::pair<std::size_t, std::size_t>>& word, std::uint32_t value) {
-                if (!word) return;
-                writablePrograms[word->first].userData[word->second] = value;
-                patched.insert(word->first);
+            const auto patch = [&](const std::vector<std::pair<std::size_t, std::size_t>>& words, std::uint32_t value) {
+                for (const auto& [program, word] : words) {
+                    writablePrograms[program].userData[word] = value;
+                    patched.insert(program);
+                }
             };
-            patch(baseVertexWord, indirect.recordBytes == 20 ? arguments.vertexOffset : arguments.firstVertexOrIndex);
-            patch(startInstanceWord, arguments.firstInstance);
-            patch(drawIndexWord, record);
+            patch(baseVertexWords, indirect.recordBytes == 20 ? arguments.vertexOffset : arguments.firstVertexOrIndex);
+            patch(startInstanceWords, arguments.firstInstance);
+            patch(drawIndexWords, record);
             if (graphics.stages.tessellation) {
                 for (std::size_t i = 0; i < programs.size(); ++i) {
                     if (programs[i].binary.stage == Stage::TessellationControl || programs[i].binary.stage == Stage::TessellationEvaluation) patched.insert(i);
@@ -613,7 +624,7 @@ DrawVerdict Driver::draw(QueueState& queue, std::span<const std::uint32_t> packe
     }
 
     std::vector<std::shared_ptr<DispatchVariant>> recipeStages;
-    if (registerKey && !drawParameters.indirect && !patchedStages && Graphics::DrawRecipes()) {
+    if (registerKey && !drawParameters.indirect && !patchedStages && !graphics.stages.tessellationGeometry && Graphics::DrawRecipes()) {
         recipeStages.reserve(programs.size());
         for (std::size_t i = 0; i < programs.size(); ++i) recipeStages.push_back(drawHit ? matched[i] : fresh[i]);
         if (std::all_of(recipeStages.begin(), recipeStages.end(), [](const std::shared_ptr<DispatchVariant>& variant) { return variant == nullptr; })) recipeStages.clear();
