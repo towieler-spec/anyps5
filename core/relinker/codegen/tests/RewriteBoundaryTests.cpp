@@ -3,6 +3,9 @@
 #include <stdexcept>
 
 static void Require(bool ok) { if (!ok) throw std::runtime_error("Invalid rewrite boundary accepted"); }
+static void RequireTruncatedBranchRejected(bool ok) {
+    if (!ok) throw std::runtime_error("Length-changing rewrite accepted a section with a truncated relative branch");
+}
 
 int main() {
     try {
@@ -34,7 +37,7 @@ int main() {
             } catch (const std::exception&) {
                 rejected = true;
             }
-            Require(rejected);
+            RequireTruncatedBranchRejected(rejected);
         }
         std::cout << "18 rewrite boundary cases passed\n";
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
