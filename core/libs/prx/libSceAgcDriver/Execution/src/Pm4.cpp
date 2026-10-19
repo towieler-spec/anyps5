@@ -378,9 +378,11 @@ void Validate(std::span<const std::uint32_t> packet, std::uint32_t queue) {
             require((packet[1] & 0x7fffffffu) == 0 && (packet[2] & 0x7fffffffu) == 0, "CONTEXT_CONTROL register loading and shadowing are not implemented");
             break;
         case 0x46: {
-            require((packet[1] & ~0x73fu) == 0, "unsupported EVENT_WRITE flags or reserved bits");
             const auto eventType = packet[1] & 0x3fu;
-            const auto eventIndex = (packet[1] >> 8u) & 7u;
+            const auto eventIndex = (packet[1] >> 8u) & 0xfu;
+            const auto streamOutStatistics = (eventType >= 0x01u && eventType <= 0x03u) || eventType == 0x20u;
+            require(!streamOutStatistics || (eventIndex != 3 && (eventIndex < 8 || eventIndex > 11)), "stream-out statistics sampling to memory is not implemented");
+            require((packet[1] & ~0x73fu) == 0, "unsupported EVENT_WRITE flags or reserved bits");
             switch (eventType) {
                 case 0x07: case 0x0f: case 0x10:
                     size(2);
@@ -400,6 +402,11 @@ void Validate(std::span<const std::uint32_t> packet, std::uint32_t queue) {
                     graphics();
                     size(2);
                     require(eventIndex == 0, "invalid VGT_FLUSH event index");
+                    break;
+                case 0x01: case 0x02: case 0x03: case 0x20:
+                    graphics();
+                    size(2);
+                    require(eventIndex == 0, "invalid stream-out statistics event index");
                     break;
                 case 0x39:
                     graphics();
@@ -844,13 +851,10 @@ DrawParameters resolveIndirectDraw(std::span<const std::uint32_t> packet, const 
         draw.firstVertex = offset->second;
         indirect.indxOffset = offset->second;
     } else {
-        // The CP clamps firstIndex + indexCount to INDEX_BUFFER_SIZE: the declared range is the
-        // hardware's view of the index buffer, so that is what gets bound.
         const auto indexSize = indexSizeOf(queue);
         require(queue.indexBufferSize != 0, "INDEX_BUFFER_SIZE has not been set");
         const auto bytes = static_cast<std::uint64_t>(queue.indexBufferSize) * indexSize;
         require(bytes <= std::numeric_limits<std::size_t>::max() && bytes <= std::numeric_limits<std::uint64_t>::max() - queue.indexBase, "index range size overflow");
-        GuestMemory::CheckRange(reinterpret_cast<const void*>(queue.indexBase), static_cast<std::size_t>(bytes), indexSize);
         draw.indexAddress = queue.indexBase;
         draw.indexCount = queue.indexBufferSize;
         draw.indexSize = indexSize;
