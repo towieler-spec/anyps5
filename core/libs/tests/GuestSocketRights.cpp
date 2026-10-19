@@ -133,6 +133,18 @@ static void CheckPassedPipe(const int (&pair)[2]) {
     Require(close_nid_postfix(writer) == 0);
     Require(read_nid_postfix(pipe[0], text, sizeof(text)) == 0);
     Require(close_nid_postfix(pipe[0]) == 0);
+
+    int closing[2] = {-1, -1};
+    Require(pipe_nid_postfix(closing) == 0);
+    control = RightsControl({closing[1]}, length);
+    Require(SendWith(pair[0], "exec", control.data(), length) == 4);
+    Require(close_nid_postfix(closing[1]) == 0);
+    const auto marked = ReceiveWith(pair[1], Space(sizeof(int)), ControlCloseOnExec);
+    Require(marked.bytes == 4 && marked.controlLength == Space(sizeof(int)));
+    RequireRecord(marked, 1);
+    const int markedWriter = ReceivedDescriptor(marked, 0);
+    Require(fcntl_nid_postfix(markedWriter, GetDescriptorFlags) == 1);
+    Require(close_nid_postfix(markedWriter) == 0 && close_nid_postfix(closing[0]) == 0);
 }
 
 static void CheckPassedSockets(const int (&pair)[2]) {
