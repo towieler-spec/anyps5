@@ -31,6 +31,7 @@
 #include <functional>
 #include <optional>
 #include <span>
+#include <algorithm>
 #include <vector>
 #include <iostream>
 #include <stdexcept>
@@ -1842,8 +1843,31 @@ void scannerZeroTail() {
     const auto scanner = Codegen::MakeInstructionScanner();
     const Bytes code{0xC3, 0x00, 0x00, 0x00};
     require(scanner->ScanCodeSection(code, 0, code.size()).size() == 2, "Odd zero padding at segment tail must end the scan");
+}
+
+void scannerEmbeddedDataResync() {
+    const auto scanner = Codegen::MakeInstructionScanner({}, true);
+    const Bytes code{
+        0xC3,
+        0x0F, 0x78, 0x11, 0x22, 0x33, 0x44,
+        0xC3,
+    };
+    const auto matches = scanner->ScanCodeSection(code, 0, code.size());
+    require(matches.size() >= 2, "Embedded data must not fail the scan; the surrounding instructions must decode");
+    require(matches.front().Offset == 0, "The first instruction is decoded normally");
+    require(matches.back().Offset == 6, "The instruction after the data must be reported at its real position");
+    require(matches.back().Offset + matches.back().Length == code.size(), "The scan must run to the end of the section");
     const Bytes truncated{0xC3, 0x0F};
-    requireFailure([&] { (void)scanner->ScanCodeSection(truncated, 0, truncated.size()); }, "Truncated non-zero tail must still fail");
+    require(scanner->ScanCodeSection(truncated, 0, truncated.size()).size() == 1, "Truncated non-zero tail must resync, not fail");
+    Bytes padded(32, 0x00);
+    padded[0] = 0xC3;
+    padded[14] = 0xcc;
+    padded[15] = 0xcc;
+    padded[16] = 0xC3;
+    require(scanner->ScanCodeSection(padded, 0, padded.size()).size() >= 3, "Padded sections must scan to the end");
+    const auto strict = Codegen::MakeInstructionScanner();
+    requireFailure([&] { (void)strict->ScanCodeSection(code, 0, code.size()); }, "The strict default must still refuse embedded data");
+    requireFailure([&] { (void)strict->ScanCodeSection(truncated, 0, truncated.size()); }, "The strict default must still refuse a truncated non-zero tail");
 }
 
 int main() {
@@ -1851,6 +1875,8 @@ int main() {
         decoderLengths();
         decoderRipRelative();
         decoderTwoByteOpcodeLengths();
+        scannerZeroTail();
+        scannerEmbeddedDataResync();
         sse4aOperands();
         sha256Operands();
         sha1Operands();
