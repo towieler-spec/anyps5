@@ -556,9 +556,10 @@ class ReleaseNotesEdgeCaseTests(unittest.TestCase):
             directory = Path(directory)
             source_path = directory / "source.json"
             source_path.write_text(source, encoding="utf-8")
-            body_path = directory / "nested" / "body.md"
-            full_path = directory / "nested" / "full.md"
+            body_path = directory / "nested_body" / "body.md"
+            full_path = directory / "nested_full" / "full.md"
             prepare_release_notes.prepare_notes(source_path, body_path, full_path)
+            self.assertEqual(body_path.read_text(encoding="utf-8"), notes)
             self.assertEqual(full_path.read_text(encoding="utf-8"), notes)
 
     def test_body_over_limit_without_whats_changed_is_returned_unchanged(self):
