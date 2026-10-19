@@ -197,6 +197,7 @@ public:
     void WriteBack();
     // Deferred write-back (APS5_EAGER_WRITEBACK=1 stores at once instead).
     void MarkDirty();
+    void MarkWholeWritten();
     void MarkSliceDirty(std::uint32_t slice);
     void Flush();
     bool Dirty() const;
