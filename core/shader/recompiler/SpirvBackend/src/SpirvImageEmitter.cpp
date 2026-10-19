@@ -193,9 +193,12 @@ std::uint32_t CoordF32(SpirvValueEmitContext& ctx, const ImageEmitAccess& access
         x = CubeAxis(ctx.state, x);
         y = CubeAxis(ctx.state, y);
     }
+    if (access.image.depthCompare && (access.image.flatLineCompatible || access.mem.imageDimension == RdnaImageDimension::Dim1D || access.mem.imageDimension == RdnaImageDimension::Dim1DArray)) {
+        y = ConstantF32(ctx.state, 0x3f000000u);
+    }
     const auto result = ctx.state.module.AllocateId();
     if (components == 3u) {
-        auto z = component(2u);
+        auto z = (access.image.depthCompare && access.mem.imageDimension == RdnaImageDimension::Dim1DArray) ? component(1u) : component(2u);
         if (cube) {
             z = CubeLayer(ctx.state, z);
         }

@@ -1746,9 +1746,11 @@ private:
         ImageResource image;
         image.source = source;
         image.resourceClass = ImageOpcodeInfoOf(op).resourceClass;
-        image.dimension = memory.imageDimension;
-        image.mipMode = image.resourceClass == ImageResourceClass::Storage && memory.imageHasMip ? ImageMipMode::DynamicStorage : ImageMipMode::None;
         image.depthCompare = (memory.imageSampleFlags & RdnaImageSampleFlagCompare) != 0;
+        image.dimension = (image.depthCompare && (memory.imageDimension == RdnaImageDimension::Dim1D || memory.imageDimension == RdnaImageDimension::Dim1DArray))
+            ? (memory.imageDimension == RdnaImageDimension::Dim1D ? RdnaImageDimension::Dim2D : RdnaImageDimension::Dim2DArray)
+            : memory.imageDimension;
+        image.mipMode = image.resourceClass == ImageResourceClass::Storage && memory.imageHasMip ? ImageMipMode::DynamicStorage : ImageMipMode::None;
         image.r128 = memory.imageR128;
         image.packed = memory.imagePacked;
         image.byElements = memory.imageByElements;
