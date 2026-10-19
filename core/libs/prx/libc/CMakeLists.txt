@@ -510,6 +510,11 @@ if(BUILD_TESTING)
         endif()
         set_tests_properties(guest_call_trace_abort PROPERTIES TIMEOUT 20 PASS_REGULAR_EXPRESSION
             "last traced system library calls[^~]*#1 thread [0-9]+ libTraced.prx Integers from [^~]*guest_call_trace_tests${CMAKE_EXECUTABLE_SUFFIX}[^~]*#2 thread [0-9]+ libOther.prx Blocks from[^~]*most called traced imports \\(2 calls in total\\):[^~]* 1 libTraced.prx Integers[^~]* 1 libOther.prx Blocks")
+        if(NOT WIN32)
+            add_test(NAME guest_call_trace_abort_race COMMAND guest_call_trace_tests abort-race)
+            set_tests_properties(guest_call_trace_abort_race PROPERTIES TIMEOUT 20 PASS_REGULAR_EXPRESSION
+                "last traced system library calls[^~]*#102 thread [0-9]+ libTraced.prx Integers from[^~]*most called traced imports \\(102 calls in total\\):[^~]* 101 libTraced.prx Integers[^~]* 1 libOther.prx Blocks")
+        endif()
     endif()
     add_test_executable(guest_syslog_tests ${LIBS_INCLUDE_DIR}/tests/GuestSyslog.cpp)
     target_include_directories(guest_syslog_tests PRIVATE ${LIBS_INCLUDE_DIR})

@@ -87,7 +87,7 @@ int main(int argc, char** argv) {
 #else
     Require(setenv("APS5_TRACE_CALLS", "libTraced,libOther.prx", 1) == 0);
 #endif
-    if (argc > 1 && std::strcmp(argv[1], "abort") == 0) {
+    if (argc > 1 && (std::strcmp(argv[1], "abort") == 0 || std::strcmp(argv[1], "abort-race") == 0)) {
 #ifndef _WIN32
         Require(std::signal(SIGABRT, [](int) { _exit(3); }) != SIG_ERR);
 #endif
@@ -104,6 +104,16 @@ int main(int argc, char** argv) {
             for (;;) pause();
         }).detach();
         while (!locked.load()) std::this_thread::yield();
+        if (std::strcmp(argv[1], "abort-race") == 0) {
+            for (int call = 0; call < 100; ++call) Require(first(1, 2, 3, 4, 5, 6, 7, 8) == 204);
+            std::atomic<bool> go{false};
+            std::thread([&go] {
+                while (!go.load()) {
+                }
+                std::abort();
+            }).detach();
+            go.store(true);
+        }
 #endif
         std::abort();
     }

@@ -4,6 +4,7 @@
 #else
 #include <cerrno>
 #include <csignal>
+#include <ctime>
 #include <link.h>
 #include <sys/mman.h>
 #include <unistd.h>
@@ -122,6 +123,7 @@ struct ModuleMap {
 struct sigaction g_previousAbort{};
 std::atomic<const ModuleMap*> g_modules{nullptr};
 std::atomic<bool> g_reporting{false};
+std::atomic<bool> g_reported{false};
 unsigned long long g_moduleChanges = ~0ull;
 
 void SnapshotModules() {
@@ -238,6 +240,10 @@ void ReportOnAbort(int number, siginfo_t* info, void* context) {
         ReportLine line;
         line.Text("[libc] SIGABRT").Write();
         ReportCallTrace();
+        g_reported.store(true, std::memory_order_release);
+    } else {
+        const timespec pause{0, 1000000};
+        for (int waited = 0; waited < 2000 && !g_reported.load(std::memory_order_acquire); ++waited) nanosleep(&pause, nullptr);
     }
     errno = savedErrno;
     if ((g_previousAbort.sa_flags & SA_SIGINFO) != 0) {
