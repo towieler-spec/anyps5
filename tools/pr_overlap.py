@@ -40,6 +40,9 @@ def upstream():
 
 def depends_on(body):
     body = re.sub(r"<!--.*?-->", "", body or "", flags=re.S)
+    body = re.sub(r"\[([^\]]*)\]\(https?://github\.com/[^/\s]+/[^/\s]+/pull/(\d+)\)", r"#\2", body)
+    body = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", body)
+    body = re.sub(r"https?://github\.com/[^/\s]+/[^/\s]+/pull/(\d+)\b", r"#\1", body)
     match = next((match for match in DEPENDS.finditer(body) if match.group(1).strip()), None) or PLAIN_DEPENDS.search(body)
     return {int(n) for n in re.findall(r"#(\d+)", match.group(1))} if match else set()
 
