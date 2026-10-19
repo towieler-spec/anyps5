@@ -14,6 +14,8 @@
 #include <cstdlib>
 #include <functional>
 #include <shared_mutex>
+#include <stdexcept>
+#include <string>
 
 namespace AgcDriver::DriverDetail {
 
@@ -62,8 +64,18 @@ bool keepsDrawPipeline(std::span<const std::uint32_t> packet, std::uint32_t head
 
 }
 
-void Driver::deliverGuestEopInterrupt(std::uint32_t queue) {
-    AgcDriverDeliverEopInterrupt(queue);
+void Driver::deliverGuestEopInterrupt(std::uint32_t queue, std::uint32_t context) {
+    AgcDriverDeliverEopInterrupt(queue, context);
+}
+
+std::optional<std::uint32_t> Driver::releaseInterrupt(std::span<const std::uint32_t> packet, std::uint32_t opcode, bool carriesFlip) {
+    if (opcode != 0x49 || carriesFlip || packet.size() < 3) return std::nullopt;
+    const auto interruptSelect = (packet[2] >> 24u) & 7u;
+    if (interruptSelect == 0 || interruptSelect == 3) return std::nullopt;
+    if (packet.size() < 8) throw std::runtime_error("AGC: an interrupting release has no interrupt context dword");
+    const auto context = packet[7] & 0x0fffffffu;
+    if ((context & 0x08000000u) != 0) throw std::runtime_error("AGC: a release asks for typed interrupt context " + std::to_string(context) + ", which is not delivered as a graphics end-of-pipe event; not implemented");
+    return context;
 }
 
 template <typename TWork>
@@ -203,7 +215,7 @@ void Driver::execute(const Submission& submission) {
         PerformanceContext timingContext(submission.queue == 0 ? pendingFrameTiming.get() : FrameTiming::Async());
         PerformanceTimer timing("Driver.Packet");
         const bool predicated = Pm4::Predicated(header) && queue.predication.operation != 0;
-        if (pipelined && !predicated && header != FlipPacketHeader && header != RenderingWaitPacketHeader && !submission.flips.contains(cursor) && (enqueueLabelPacket(packet, opcode, submission.queue) || enqueueDmaPacket(packet, opcode, submission.queue, queue))) {
+        if (pipelined && !predicated && header != FlipPacketHeader && header != RenderingWaitPacketHeader && !submission.flips.contains(cursor) && (enqueueLabelPacket(packet, opcode, submission.queue, releaseInterrupt(packet, opcode, false)) || enqueueDmaPacket(packet, opcode, submission.queue, queue))) {
             traceLabel(packet, submission.queue);
             recent.Record(cursor);
             cursor = nextCursor;
@@ -289,7 +301,7 @@ void Driver::execute(const Submission& submission) {
         if (profilePackets) packetProfile.flushMs += std::chrono::duration<double, std::milli>(packetTimer.start - flushStart).count();
 
         bool wroteOnGpu = false, endOfPipeInterrupt = false, interruptDeferred = false, drawPacket = false, sampleDump = false;
-        const bool drains = preparePacketMemory(submission, queue, packet, header, opcode, wroteOnGpu, endOfPipeInterrupt, interruptDeferred, drawPacket, sampleDump);
+        const bool drains = preparePacketMemory(submission, queue, packet, header, opcode, releaseInterrupt(packet, opcode, submission.flips.contains(cursor)), wroteOnGpu, endOfPipeInterrupt, interruptDeferred, drawPacket, sampleDump);
         traceLabel(packet, submission.queue);
         timing.Mark("prepare_memory");
 
@@ -313,7 +325,6 @@ void Driver::execute(const Submission& submission) {
                     Pm4::Execute(packet, queue);
                     if (const auto label = Pm4::DecodeLabelWrite(packet)) noteLabelStore(label->address, label->Bytes(), ++eventSerial, submission.queue);
                 }
-                if (endOfPipeInterrupt && !interruptDeferred) deliverGuestEopInterrupt(submission.queue);
             }
             if (deviceUse.owns_lock()) deviceUse.unlock();
             CheckFailure();
@@ -428,7 +439,7 @@ void Driver::execute(const Submission& submission) {
                     if (const auto label = Pm4::DecodeLabelWrite(packet)) noteLabelStore(label->address, label->Bytes(), ++eventSerial, submission.queue);
                 }
             }
-            if (endOfPipeInterrupt && !interruptDeferred) deliverGuestEopInterrupt(submission.queue);
+            if (endOfPipeInterrupt && !interruptDeferred) deliverGuestEopInterrupt(submission.queue, packet[7] & 0x0fffffffu);
         }
         if (drawPacket || (sampleDump && wroteOnGpu)) Graphics::Recorder::CountRecordedWork();
         timing.Mark(header == RenderingWaitPacketHeader ? "rendering_wait" : opcode == 0x3c || opcode == 0x93 ? "memory_wait" : opcode == 0x15 || opcode == 0x16 ? "dispatch" : drawPacket ? "draw" : "execute");
