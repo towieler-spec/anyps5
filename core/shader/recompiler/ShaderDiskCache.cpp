@@ -1627,14 +1627,16 @@ private:
                 std::filesystem::remove_all(it->path(), removeError);
             }
         }
-        error.clear();
-        for (std::filesystem::directory_iterator it(directory, error), end; !error && it != end; it.increment(error)) {
-            if (it->path().filename().string().find(".tmp.") == std::string::npos) continue;
-            std::error_code timeError;
-            const auto written = std::filesystem::last_write_time(it->path(), timeError);
-            if (!timeError && now - written > std::chrono::hours(1)) {
-                std::error_code removeError;
-                std::filesystem::remove(it->path(), removeError);
+        for (const auto& folder : {root, directory}) {
+            error.clear();
+            for (std::filesystem::directory_iterator it(folder, error), end; !error && it != end; it.increment(error)) {
+                std::error_code timeError;
+                if (it->path().filename().string().find(".tmp.") == std::string::npos || !it->is_regular_file(timeError)) continue;
+                const auto written = std::filesystem::last_write_time(it->path(), timeError);
+                if (!timeError && now - written > std::chrono::hours(1)) {
+                    std::error_code removeError;
+                    std::filesystem::remove(it->path(), removeError);
+                }
             }
         }
     }

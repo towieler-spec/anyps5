@@ -973,6 +973,36 @@ void verifyAcrossProcesses(const char* self) {
     require(std::system(command.c_str()) == 0, "the loading process failed");
 }
 
+int runHousekeepingProcess() {
+    ComputeRequest request(true);
+    static_cast<void>(Recompile(request.request));
+    ShaderDiskCache::Shutdown();
+    return 0;
+}
+
+void verifyRootTemporaries(const char* self, const std::filesystem::path& directory) {
+    const auto root = directory / "root-temporaries";
+    std::filesystem::create_directories(root);
+    const auto pipelines = root / "vk-pipelines-test.bin";
+    const auto stale = root / "vk-pipelines-test.bin.tmp.1.0";
+    const auto fresh = root / "vk-pipelines-test.bin.tmp.2.0";
+    for (const auto& path : {pipelines, stale, fresh}) std::ofstream(path, std::ios::binary) << "pipelines";
+    const auto old = std::filesystem::file_time_type::clock::now() - std::chrono::hours(2);
+    std::filesystem::last_write_time(pipelines, old);
+    std::filesystem::last_write_time(stale, old);
+    const auto previous = std::getenv("ANYPS5_SHADER_CACHE_DIR");
+    const std::string restore = previous ? previous : "";
+    setEnvironment("ANYPS5_SHADER_CACHE_DIR", root.string());
+    const std::string command = "\"" + std::string(self) + "\" --housekeeping";
+    const auto status = std::system(command.c_str());
+    setEnvironment("ANYPS5_SHADER_CACHE_DIR", restore);
+    require(status == 0, "the housekeeping process failed");
+    require(!std::filesystem::exists(stale), "a temporary file left in the cache root by an interrupted write survived housekeeping");
+    require(std::filesystem::exists(fresh), "housekeeping removed a recent temporary file of the cache root");
+    require(std::filesystem::exists(pipelines), "housekeeping removed the pipeline cache file");
+    removeCacheDirectory(root);
+}
+
 struct ClockRequest {
     std::vector<std::uint32_t> code{0xf4900100u, 0x00000000u, 0xbf8cc07fu, 0x7e020204u, 0xe0700000u, 0x80000100u, 0xf800180fu, 0x01010101u, 0xbf810000u};
     std::array<std::uint32_t, 4> userData{0x10000000u, 0x00000000u, 0x40u, 0x00027facu};
@@ -2274,6 +2304,7 @@ int main(int argc, char** argv) {
         }
         if (argc == 2 && std::string_view(argv[1]) == "--large-file") return runLargeFileWrite();
         if (argc == 2 && std::string_view(argv[1]) == "--load") return runLoadingProcess();
+        if (argc == 2 && std::string_view(argv[1]) == "--housekeeping") return runHousekeepingProcess();
         if (argc == 2 && std::string_view(argv[1]) == "--load-prebuilt") return runPrebuiltLoadingProcess();
         if (argc == 2 && std::string_view(argv[1]) == "--no-failure-memo") return runWithoutFailureMemo();
         if (argc == 2 && std::string_view(argv[1]).starts_with("--load-plan")) return runPlanLoadingProcess(argv[1]);
@@ -2294,6 +2325,7 @@ int main(int argc, char** argv) {
         verifyStore();
         verifyPersist();
         verifyAcrossProcesses(argv[0]);
+        verifyRootTemporaries(argv[0], directory);
         verifyPrebuiltAcrossProcesses(argv[0], directory);
         verifyPlanAcrossProcesses(argv[0]);
         verifyEmissionFailureMemo();
