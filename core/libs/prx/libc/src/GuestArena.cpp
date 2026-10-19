@@ -140,6 +140,7 @@ public:
         std::lock_guard lock(_lock);
         const auto start = reinterpret_cast<std::uintptr_t>(pointer);
         const auto end = start + bytes;
+        _occupiedPrefixEnd = std::min(_occupiedPrefixEnd, std::max(_base, start));
         auto it = _used.upper_bound(start);
         if (it != _used.begin()) --it;
         while (it != _used.end() && it->first < end) {
@@ -301,13 +302,14 @@ private:
         if (alignment == 0 || (alignment & (alignment - 1)) != 0) throw std::invalid_argument("invalid guest arena alignment");
     }
 
-    std::uintptr_t FindAtOrAbove(std::uintptr_t hint, std::size_t bytes, std::size_t alignment) const {
-        std::uintptr_t candidate = alignUp(std::max(_base, hint), alignment);
+    std::uintptr_t FindAtOrAbove(std::uintptr_t hint, std::size_t bytes, std::size_t alignment) {
+        std::uintptr_t candidate = alignUp(std::max(bytes == 0 ? _base : _occupiedPrefixEnd, hint), alignment);
         auto it = _used.upper_bound(candidate);
         if (it != _used.begin() && std::prev(it)->second > candidate) --it;
         for (; it != _used.end(); ++it) {
             const auto& [start, end] = *it;
             if (candidate <= _end && bytes <= _end - candidate && candidate + bytes <= start) break;
+            if (start <= _occupiedPrefixEnd) _occupiedPrefixEnd = std::max(_occupiedPrefixEnd, end);
             candidate = std::max(candidate, alignUp(end, alignment));
         }
         if (candidate > _end || bytes > _end - candidate) return 0;
@@ -322,6 +324,7 @@ private:
 
     std::uintptr_t _base = 0;
     std::uintptr_t _end = 0;
+    std::uintptr_t _occupiedPrefixEnd = ArenaStart;
     bool _writeWatched = false;
 
 public:
