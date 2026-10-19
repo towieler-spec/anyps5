@@ -104,12 +104,14 @@ def check_deferred_linux(relinker, work, host, preinit, has_init, native):
     libraries.mkdir()
     provider = libraries / 'libc.prx'
     shutil.copyfile(host, provider)
+    shutil.copyfile(host, libraries / 'libkernel.prx')
     result = subprocess.run([str(relinker), '--skip-syscall-check', '--module-dir', 'plugins',
                              '--rpath', '$ORIGIN/libs', str(source), str(work / 'output.elf')],
                             capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, (preinit, has_init, result.stdout, result.stderr)
     converted = work / 'app0/plugins/zero.prx.guest.prx'
     image = converted.read_bytes()
+    assert ('libkernel.prx' in needed_libraries(image)) == has_init, 'Deferred initializer dependency does not match DT_INIT presence'
     tags = dynamic_tags(image)
     assert tags.get(12, 0) == 0 and tags.get(25, 0) == 0, 'Deferred Linux module has an eager initializer'
     index = module_symbols(image).index('__aps5_guest_lifecycle_nid_no_patch') + 1
