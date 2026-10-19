@@ -1261,6 +1261,8 @@ DrawInputs prepareDrawInputs(const Context& context, const State& state, const P
         soloHandles[f] = copy.buffer->Handle();
         inputs.vertexBuffers.push_back(std::move(copy.buffer));
     }
+    inputs.vertexHandles.reserve(attributes.size());
+    inputs.vertexBuffers.reserve(inputs.vertexBuffers.size() + attributes.size());
     for (std::size_t i = 0; i < attributes.size(); ++i) {
         if (zeroed[i] != nullptr) {
             inputs.vertexHandles.push_back(zeroed[i]->Handle());
@@ -1832,7 +1834,8 @@ void recordDraw(const Context& context, const State& state, const Pm4::DrawParam
     }
     passReads.insert(passReads.end(), inputs.inPlaceReads.begin(), inputs.inPlaceReads.end());
     const auto passImages = resources.StorageImages();
-    std::vector<std::pair<VkImage, bool>> passAttachments;
+    thread_local std::vector<std::pair<VkImage, bool>> passAttachments;
+    passAttachments.clear();
     passAttachments.reserve(record.targets.size());
     for (const auto& target : record.targets) {
         if (target != nullptr) passAttachments.emplace_back(target->Image(), true);
