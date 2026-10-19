@@ -154,6 +154,37 @@ std::uint32_t inactiveVertexPointSize(const QueueState& queue) {
     }
 }
 
+bool pointOutput(const QueueState& queue) {
+    const auto stages = find(queue.context, 0x2d5);
+    const auto primitive = find(queue.userConfig, 0x242, RegisterBank::UserConfig);
+    if (stages == queue.context.end()) return false;
+    if ((stages->second & 0x24u) == 0) return primitive != queue.userConfig.end() && primitive->second == 1u;
+    const auto output = find(queue.context, 0x29b);
+    return (stages->second & 0x24u) == 0x20u && output != queue.context.end() && output->second == 0u;
+}
+
+void decodePointSize(const QueueState& queue, State& result) {
+    const auto& cx = queue.context;
+    const auto size = read(cx, 0x280);
+    const auto limits = read(cx, 0x281);
+    const bool fromVertex = (result.paClVsOutCntl & (1u << 16u)) != 0;
+    Require(!fromVertex || (result.paClVsOutCntl & (1u << 21u)) != 0, "USE_VTX_POINT_SIZE without VS_OUT_MISC_VEC_ENA is unsupported");
+    Require(fromVertex || (size & 0xffffu) == size >> 16u, "points whose PA_SU_POINT_SIZE width and height differ are unsupported");
+    Require(fromVertex || (size & 0xffffu) != 0, "points of size 0 (PA_SU_POINT_SIZE 0) are unsupported");
+    Require((limits & 0xffffu) <= limits >> 16u, "PA_SU_POINT_MINMAX with a minimum above its maximum is unsupported");
+    Require(!fromVertex || (limits >> 16u) != 0, "a vertex point size clamped to 0 (PA_SU_POINT_MINMAX maximum 0) is unsupported");
+    result.pointSize = static_cast<float>(size & 0xffffu) / 8.0f;
+    result.pointSizeMin = static_cast<float>(limits & 0xffffu) / 8.0f;
+    result.pointSizeMax = static_cast<float>(limits >> 16u) / 8.0f;
+    const auto interpolation = find(cx, 0x1b5);
+    const auto inputs = find(cx, 0x1b6);
+    if (interpolation == cx.end() || (interpolation->second & 2u) == 0 || inputs == cx.end()) return;
+    for (std::uint32_t input = 0; input < (inputs->second & 0x3fu); ++input) {
+        const auto control = find(cx, 0x191 + input);
+        Require(control == cx.end() || (control->second & 0x820000u) == 0, "point sprite texture coordinates (SPI_PS_INPUT_CNTL PT_SPRITE_TEX) are not implemented");
+    }
+}
+
 constexpr std::uint32_t DepthControlMask = ~0x007007f0u;
 // EXEC_ON_HIER_FAIL / EXEC_ON_NOOP / EXEC_IF_OVERLAPPED (bits 9, 10, 17) only force the pixel shader
 // to run, which it always does here.
@@ -960,6 +991,15 @@ std::array<std::uint8_t, 32> PixelSampleLocations(const State& state, const Shad
     return locations;
 }
 
+void ApplyPointSize(const State& state, ShaderRecompiler::ShaderVertexStageInfo& vertex) {
+    if (!state.vertexPoints && !(state.stages.mesh.has_value() && state.stages.mesh->outputPrimitiveSize == 1u)) return;
+    vertex.paClVsOutCntl |= state.paClVsOutCntl & (1u << 16u);
+    vertex.pointList = true;
+    vertex.pointSize = state.pointSize;
+    vertex.pointSizeMin = state.pointSizeMin;
+    vertex.pointSizeMax = state.pointSizeMax;
+}
+
 ShaderStages DecodeShaderStages(const QueueState& queue, bool vertexWorkgroup) {
     const auto value = read(queue.context, 0x2d5);
     const auto validate = [&](bool condition, const char* reason) {
@@ -1007,8 +1047,8 @@ ShaderStages DecodeShaderStages(const QueueState& queue, bool vertexWorkgroup) {
         const auto maxVertices = read(queue.context, 0x1ff);
         const auto verticesPerPrimitive = vertexWorkgroup ? 3u : read(queue.context, 0x2ce);
         const auto outputType = read(queue.context, 0x29b);
-        validate(outputType == 2 || (outputType == 1 && !vertexWorkgroup), "VGT_GS_OUT_PRIM_TYPE other than a triangle strip, or a line strip from a geometry program, is unsupported");
-        const auto outputSize = outputType == 1 ? 2u : 3u;
+        validate(outputType == 2 || (outputType < 2 && !vertexWorkgroup), "VGT_GS_OUT_PRIM_TYPE other than a triangle strip, or points or a line strip from a geometry program, is unsupported");
+        const auto outputSize = outputType + 1u;
         validate((primitive == 1 || primitive == 2 || primitive == 4 || primitive == 5 || primitive == 6) && verticesPerPrimitive >= outputSize, "unsupported geometry input or output assembly");
         const auto inputSize = primitive == 1 ? 1u : primitive == 2 ? 2u : 3u;
         validate(vertices >= inputSize && maxVertices != 0 && (!vertexWorkgroup || maxVertices >= inputSize) && maxVertices <= 256 && verticesPerPrimitive <= 256, "invalid geometry subgroup output");
@@ -1021,7 +1061,7 @@ ShaderStages DecodeShaderStages(const QueueState& queue, bool vertexWorkgroup) {
         validate(esgsItemSize != 0 && esgsItemSize * vertices <= 0xffffu, "invalid VGT_ESGS_RING_ITEMSIZE");
         const auto amplification = fastLaunch ? read(queue.context, 0x2d3) & 0x1ffu : verticesPerPrimitive - outputSize + 1u;
         validate(amplification != 0, "fast launch subgroup amplifies to no primitives");
-        const auto maxPrimitives = outputSize == 2u && !fastLaunch ? std::max(primitives * amplification, maxVertices) : primitives * amplification;
+        const auto maxPrimitives = outputSize <= 2u && !fastLaunch ? std::max(primitives * amplification, maxVertices) : primitives * amplification;
         const auto threads = std::max({(groupPrimitives - 1u) * inputStep + inputSize, primitives, maxVertices, maxPrimitives});
         const auto raster = find(queue.context, 0x205);
         const auto provokingVertex = raster != queue.context.end() && (raster->second & (1u << 19u)) != 0 ? outputSize - 1u : 0u;
@@ -1134,7 +1174,11 @@ State DecodeState(const QueueState& queue, bool vertexWorkgroup) {
     const auto primitive = read(queue.userConfig, 0x242, RegisterBank::UserConfig);
     APS5_LOG_OUT_DEBUG("DecodeState primitive=%u path=%u vertexWave=%u", primitive, static_cast<unsigned>(result.stages.path), result.stages.vertexWaveSize);
     switch (primitive) {
-        case 1: Require(result.stages.mesh.has_value(), "point-list vertex rendering requires point-size output support"); result.topology = VK_PRIMITIVE_TOPOLOGY_POINT_LIST; break;
+        case 1:
+            Require(result.stages.mesh.has_value() || result.stages.path == ShaderPath::Vertex, "point lists are only drawn through the vertex and geometry paths");
+            result.topology = VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
+            result.vertexPoints = result.stages.path == ShaderPath::Vertex;
+            break;
         case 2: result.topology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST; break;
         case 3: result.topology = VK_PRIMITIVE_TOPOLOGY_LINE_STRIP; break;
         case 7:
@@ -1159,9 +1203,10 @@ State DecodeState(const QueueState& queue, bool vertexWorkgroup) {
     }
     APS5_LOG_OUT_DEBUG("Topology=%u", static_cast<unsigned>(result.topology));
     result.primitiveRestart = read(queue.userConfig, 0x24b, RegisterBank::UserConfig) != 0 && !result.rectList && !result.quadList && result.topology != VK_PRIMITIVE_TOPOLOGY_PATCH_LIST;
-    zero(cx, 0x207, ~(LayerExports | ClipCullExports | inactiveVertexPointSize(queue)), "layer, viewport or auxiliary vertex exports");
+    zero(cx, 0x207, ~(LayerExports | ClipCullExports | ((result.vertexPoints || (result.stages.mesh.has_value() && result.stages.mesh->outputPrimitiveSize == 1u)) ? 1u << 16u : inactiveVertexPointSize(queue))), "layer, viewport or auxiliary vertex exports");
     Require(std::popcount(read(cx, 0x207) & 0xffffu) <= 8, "more than eight clip and cull distances are unsupported");
     result.paClVsOutCntl = read(cx, 0x207);
+    if (result.vertexPoints || (result.stages.mesh.has_value() && result.stages.mesh->outputPrimitiveSize == 1u)) decodePointSize(queue, result);
     result.samples = decodeSamples(cx);
     Require(coveredCentroidSupported(queue), "COVERED_CENTROID_IS_CENTER with active or unspecified centroid inputs is not implemented");
     decodeSampleLocations(cx, result);
@@ -1253,7 +1298,7 @@ State DecodeState(const QueueState& queue, bool vertexWorkgroup) {
     const auto raster = read(cx, 0x205);
     // Bits 5-10 give the front/back polygon type (2 = filled triangles), which POLY_MODE (bit 3) turns on
     // explicitly; KEEP_TOGETHER_ENABLE (bit 24) only affects primitive distribution across the chip.
-    const bool pointsOrLines = result.topology == VK_PRIMITIVE_TOPOLOGY_POINT_LIST || result.topology == VK_PRIMITIVE_TOPOLOGY_LINE_LIST || result.topology == VK_PRIMITIVE_TOPOLOGY_LINE_STRIP || (result.stages.mesh.has_value() && result.stages.mesh->outputPrimitiveSize == 2u);
+    const bool pointsOrLines = result.topology == VK_PRIMITIVE_TOPOLOGY_POINT_LIST || result.topology == VK_PRIMITIVE_TOPOLOGY_LINE_LIST || result.topology == VK_PRIMITIVE_TOPOLOGY_LINE_STRIP || (result.stages.mesh.has_value() && result.stages.mesh->outputPrimitiveSize <= 2u);
     const auto lineOffset = (raster & 0x1800u) != 0 && !pointsOrLines ? 0x2000u : 0u;
     const auto rasterMode = raster & ~0x7u & ~(1u << 24u) & ~0x1800u & ~lineOffset & ~(1u << 19u) & ~(1u << 16u);
     if (rasterMode != 0 && rasterMode != 0x240u && rasterMode != 0x248u) throw std::runtime_error("AGC graphics: " + zeroMessage(0x205, raster, "polygon mode, depth bias or nonstandard rasterization"));
@@ -1539,6 +1584,7 @@ std::array<std::uint16_t, 4> QuadSampleMasks(const State& state) {
 
 ShaderRecompiler::RasterPrimitive RasterPrimitiveOf(const State& state) {
     if (state.rectList) return ShaderRecompiler::RasterPrimitive::Rectangle;
+    if (state.stages.mesh.has_value() && state.stages.mesh->outputPrimitiveSize == 1u) return ShaderRecompiler::RasterPrimitive::Point;
     if (state.stages.mesh.has_value() && state.stages.mesh->outputPrimitiveSize == 2u) return ShaderRecompiler::RasterPrimitive::Line;
     if (state.stages.mesh.has_value() || state.stages.tessellation.has_value()) return ShaderRecompiler::RasterPrimitive::Triangle;
     switch (state.topology) {
@@ -1877,7 +1923,7 @@ std::string DrawRejection(const QueueState& queue, bool indexed) {
         if (value(queue.userConfig, 0x242, primitive) && (primitive & 0x3fu) != 1 && (primitive & 0x3fu) != 2 && (primitive & 0x3fu) != 3 && (primitive & 0x3fu) != 4 && (primitive & 0x3fu) != 5 && (primitive & 0x3fu) != 6 && (primitive & 0x3fu) != 21) return "AGC graphics: primitive restart is only supported for point, line and triangle topologies";
         if (value(cx, 0x103, resetIndex) && (resetIndex & 0xffffu) != 0xffffu) return "AGC graphics: primitive restart index other than all ones is unsupported";
     }
-    if (auto reason = nonzero(cx, 0x207, ~(LayerExports | ClipCullExports | inactiveVertexPointSize(queue)), "layer, viewport or auxiliary vertex exports"); !reason.empty()) return reason;
+    if (auto reason = nonzero(cx, 0x207, ~(LayerExports | ClipCullExports | (pointOutput(queue) ? 1u << 16u : inactiveVertexPointSize(queue))), "layer, viewport or auxiliary vertex exports"); !reason.empty()) return reason;
     if (value(cx, 0x207, word) && std::popcount(word & 0xffffu) > 8) return require(false, "more than eight clip and cull distances are unsupported");
     if (value(cx, 0x200, word)) {
         const auto renderControl = find(cx, 0x000);

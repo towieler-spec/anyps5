@@ -259,6 +259,7 @@ DrawVerdict Driver::draw(QueueState& queue, std::span<const std::uint32_t> packe
         if (vertexInfos[i]) vertexInfos[i]->paClVsOutCntl = PositionExportLayout(program.snapshot.get(), program.codeOffset, program.binary.code, readRegister(queue.context, 0x207), program.tailContinuation.get()) | graphics.layerExports;
         if (vertexInfos[i]) {
             vertexInfos[i]->depthRemapMode = graphics.depthRemap.mode;
+            Graphics::ApplyPointSize(graphics, *vertexInfos[i]);
         }
     };
     if (!registerKey) {

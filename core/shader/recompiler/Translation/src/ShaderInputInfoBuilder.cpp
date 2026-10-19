@@ -177,6 +177,10 @@ ShaderStageInputInfo BuildShaderStageInputInfo(ShaderStageKind stage, const Gues
         vertexStorage.fetchEmbedded = vertex.fetchEmbedded;
         vertexStorage.paClVsOutCntl = vertex.paClVsOutCntl;
         vertexStorage.depthRemap = {vertex.depthRemapMode};
+        vertexStorage.pointList = vertex.pointList;
+        vertexStorage.pointSize = vertex.pointSize;
+        vertexStorage.pointSizeMin = vertex.pointSizeMin;
+        vertexStorage.pointSizeMax = vertex.pointSizeMax;
         vertexStorage.fetchExternal = false;
         vertexStorage.fetchAttribReg = static_cast<int>(vertex.fetchAttribReg);
         vertexStorage.fetchBufferReg = static_cast<int>(vertex.fetchBufferReg);
@@ -224,7 +228,8 @@ ShaderStageInputInfo BuildShaderStageInputInfo(ShaderStageKind stage, const Gues
             target.provokingVertex = mesh->provokingVertex;
             target.esgsItemSize = mesh->esgsItemSize;
             target.outputPrimitiveSize = mesh->outputPrimitiveSize;
-            if (target.threadsNum[0] == 0u || target.maxVertices == 0u || target.maxPrimitives == 0u || (target.outputPrimitiveSize != 2u && target.outputPrimitiveSize != 3u) || target.provokingVertex >= target.outputPrimitiveSize) throw std::runtime_error("ShaderInputInfoBuilder: invalid mesh configuration");
+            if (target.outputPrimitiveSize == 1u) vertexStorage.pointList = true;
+            if (target.threadsNum[0] == 0u || target.maxVertices == 0u || target.maxPrimitives == 0u || (target.outputPrimitiveSize < 1u || target.outputPrimitiveSize > 3u) || target.provokingVertex >= target.outputPrimitiveSize) throw std::runtime_error("ShaderInputInfoBuilder: invalid mesh configuration");
         }
         ShaderStageInputInfo result;
         result.vertex = &vertexStorage;

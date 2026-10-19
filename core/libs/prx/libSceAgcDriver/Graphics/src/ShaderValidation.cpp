@@ -51,6 +51,8 @@ struct Module {
     std::uint32_t primitiveIndices = 0;
     bool fragmentBarycentric = false;
     bool layerOutput = false;
+    bool pointSizeOutput = false;
+    bool pointSize = false;
     std::map<std::uint32_t, std::vector<std::uint32_t>> modes;
 
     const std::vector<std::uint32_t>& Type(std::uint32_t id) const {
@@ -136,9 +138,14 @@ struct Module {
                 Require(input && (clipInput || (value == spv::BuiltInPosition && signature == "f32x4") || (value == spv::BuiltInTessCoord && stage == Stage::TessellationEvaluation && signature == "f32x3") || ((value == spv::BuiltInInvocationId || value == spv::BuiltInPrimitiveId || value == spv::BuiltInPatchVertices) && (signature == "i32" || signature == "u32"))), "unsupported tessellation built-in");
                 return;
             }
+            if (!input && value == spv::BuiltInPointSize && pointSizeOutput && signature == "f32" && !pointSize) {
+                pointSize = true;
+                return;
+            }
+            if (!input && value == spv::BuiltInPrimitivePointIndicesEXT) primitiveIndices = 1u;
             if (!input && value == spv::BuiltInPrimitiveLineIndicesEXT) primitiveIndices = 2u;
             if (!input && value == spv::BuiltInPrimitiveTriangleIndicesEXT) primitiveIndices = 3u;
-            Require((input && ((value == spv::BuiltInWorkgroupId || value == spv::BuiltInLocalInvocationId || value == spv::BuiltInGlobalInvocationId || value == spv::BuiltInNumWorkgroups) && signature == "u32x3")) || (input && value == spv::BuiltInLocalInvocationIndex && signature == "u32") || (!input && value == spv::BuiltInPrimitiveLineIndicesEXT && signature == "u32x2") || (!input && value == spv::BuiltInPrimitiveTriangleIndicesEXT && signature == "u32x3") || (!input && value == spv::BuiltInCullPrimitiveEXT && signature == "bool") || (!input && value == spv::BuiltInLayer && signature == "u32"), "unsupported mesh built-in");
+            Require((input && ((value == spv::BuiltInWorkgroupId || value == spv::BuiltInLocalInvocationId || value == spv::BuiltInGlobalInvocationId || value == spv::BuiltInNumWorkgroups) && signature == "u32x3")) || (input && value == spv::BuiltInLocalInvocationIndex && signature == "u32") || (!input && value == spv::BuiltInPrimitivePointIndicesEXT && signature == "u32") || (!input && value == spv::BuiltInPrimitiveLineIndicesEXT && signature == "u32x2") || (!input && value == spv::BuiltInPrimitiveTriangleIndicesEXT && signature == "u32x3") || (!input && value == spv::BuiltInCullPrimitiveEXT && signature == "bool") || (!input && value == spv::BuiltInLayer && signature == "u32"), "unsupported mesh built-in");
             return;
         }
         const auto signature = Signature(type);
@@ -146,6 +153,10 @@ struct Module {
             Require((value == spv::BuiltInVertexIndex || value == spv::BuiltInInstanceIndex || value == spv::BuiltInBaseInstance) && signature == "i32", "unsupported vertex built-in input");
         } else if (vertex && storage == spv::StorageClassOutput) {
             if (value == spv::BuiltInLayer && layerOutput && (signature == "u32" || signature == "i32")) return;
+            if (value == spv::BuiltInPointSize && pointSizeOutput && signature == "f32" && !pointSize) {
+                pointSize = true;
+                return;
+            }
             Require(value == spv::BuiltInPosition && signature == "f32x4" && !position, "unsupported or duplicate vertex built-in output");
             position = true;
         } else {
@@ -183,6 +194,7 @@ Module Inspect(const CompiledShader& compiled, const State& state, const VkPhysi
     Require(words[4] == 0, "unsupported SPIR-V schema: " + std::to_string(words[4]));
 
     Module module;
+    module.pointSizeOutput = (state.vertexPoints && stage == Stage::Vertex) || (mesh && state.stages.mesh.has_value() && state.stages.mesh->outputPrimitiveSize == 1u);
     std::uint32_t entries = 0;
     std::uint32_t memoryModels = 0;
     std::uint32_t entryPoint = 0;
@@ -455,7 +467,7 @@ Module Inspect(const CompiledShader& compiled, const State& state, const VkPhysi
         mode(spv::ExecutionModeLocalSize, {paired ? config.threadsPerGroup / 2u : config.threadsPerGroup, 1, 1});
         mode(spv::ExecutionModeOutputVertices, {config.maxVertices});
         mode(spv::ExecutionModeOutputPrimitivesEXT, {config.maxPrimitives});
-        mode(config.outputPrimitiveSize == 2u ? spv::ExecutionModeOutputLinesEXT : spv::ExecutionModeOutputTrianglesEXT, {});
+        mode(config.outputPrimitiveSize == 1u ? spv::ExecutionModeOutputPoints : config.outputPrimitiveSize == 2u ? spv::ExecutionModeOutputLinesEXT : spv::ExecutionModeOutputTrianglesEXT, {});
         Require(module.modes.size() == 4, "unsupported mesh execution mode");
     } else if (barycentricPatches) {
         if (control) mode(spv::ExecutionModeOutputVertices, {3u});
@@ -510,7 +522,7 @@ Module Inspect(const CompiledShader& compiled, const State& state, const VkPhysi
             const auto length = module.constants.find(outer[3]);
             Require(length != module.constants.end() && length->second != 0, "invalid per-vertex interface array length");
             if (mesh) {
-                const bool primitive = decoration.perPrimitive || module.perPrimitiveMembers.contains({outer[2], 0u}) || (decoration.builtin && (*decoration.builtin == spv::BuiltInPrimitiveLineIndicesEXT || *decoration.builtin == spv::BuiltInPrimitiveTriangleIndicesEXT || *decoration.builtin == spv::BuiltInCullPrimitiveEXT));
+                const bool primitive = decoration.perPrimitive || module.perPrimitiveMembers.contains({outer[2], 0u}) || (decoration.builtin && (*decoration.builtin == spv::BuiltInPrimitivePointIndicesEXT || *decoration.builtin == spv::BuiltInPrimitiveLineIndicesEXT || *decoration.builtin == spv::BuiltInPrimitiveTriangleIndicesEXT || *decoration.builtin == spv::BuiltInCullPrimitiveEXT));
                 Require(length->second == (primitive ? state.stages.mesh->maxPrimitives : state.stages.mesh->maxVertices), "mesh interface array disagrees with output limits");
             } else if (geometry) {
                 Require(length->second == 3u, "geometry interface array must hold the three vertices of a triangle");

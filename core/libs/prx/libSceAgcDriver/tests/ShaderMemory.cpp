@@ -4356,13 +4356,15 @@ void verifyMeshConfiguration() {
     RecompileCacheKey::Build(other, key);
     require(key != first && RecompileCacheKey::ContextHash(request) != RecompileCacheKey::ContextHash(other), "the cache keys ignore the mesh configuration");
     require(mesh.outputPrimitiveSize == 3u && replay.request.graphics->mesh->outputPrimitiveSize == 3u, "a mesh configuration does not output triangles by default");
-    otherMesh = mesh;
-    otherMesh.outputPrimitiveSize = 2u;
-    other.graphics = GraphicsCompileContext{0u, {}, otherMesh, std::nullopt, {}};
-    const auto lineReplay = RequestSerializer{}.Deserialize(RequestSerializer{}.Serialize(other));
-    require(lineReplay.request.graphics.has_value() && lineReplay.request.graphics->mesh.has_value() && lineReplay.request.graphics->mesh->outputPrimitiveSize == 2u, "the mesh output primitive size was lost in serialization");
-    RecompileCacheKey::Build(other, key);
-    require(key != first && RecompileCacheKey::ContextHash(request) != RecompileCacheKey::ContextHash(other), "the cache keys ignore the mesh output primitive size");
+    for (const auto primitiveSize : {1u, 2u}) {
+        otherMesh = mesh;
+        otherMesh.outputPrimitiveSize = primitiveSize;
+        other.graphics = GraphicsCompileContext{0u, {}, otherMesh, std::nullopt, {}};
+        const auto primitiveReplay = RequestSerializer{}.Deserialize(RequestSerializer{}.Serialize(other));
+        require(primitiveReplay.request.graphics.has_value() && primitiveReplay.request.graphics->mesh.has_value() && primitiveReplay.request.graphics->mesh->outputPrimitiveSize == primitiveSize, "the mesh output primitive size was lost in serialization");
+        RecompileCacheKey::Build(other, key);
+        require(key != first && RecompileCacheKey::ContextHash(request) != RecompileCacheKey::ContextHash(other), "the cache keys ignore the mesh output primitive size");
+    }
     RecompileRequest hull{};
     hull.shader = {ShaderStage::TessellationControl, 0x10000u, code, 0, {}};
     hull.context.waveSize = 64;
@@ -5104,25 +5106,25 @@ void verifyDepthRemapRequests() {
     const auto replay = serializer.Deserialize(remapped);
     require(replay.request.target.depthRangeRemap && replay.request.context.vertex.has_value() && replay.request.context.vertex->paClVsOutCntl == 0x89abcdefu, "the depth remap target flag or the vertex info did not round-trip");
     require(replay.request.context.vertex->depthRemapMode == 2u, "the depth remap mode did not round-trip");
-    require(serializer.Serialize(replay.request) == remapped, "a version 35 depth remap request changed on re-serialization");
+    require(serializer.Serialize(replay.request) == remapped, "a version 37 depth remap request changed on re-serialization");
     const auto plainBytes = decodeBase64(plain);
     const auto remappedBytes = decodeBase64(remapped);
-    require(plainBytes.size() == remappedBytes.size() && plainBytes.size() > 5u && std::equal(plainBytes.begin(), plainBytes.end() - 6, remappedBytes.begin()), "the depth remap flag and mode are not the last 6 bytes before the f32 flush flag of a vertex request");
+    require(plainBytes.size() == remappedBytes.size() && plainBytes.size() > 19u && std::equal(plainBytes.begin(), plainBytes.end() - 19, remappedBytes.begin()) && std::equal(plainBytes.end() - 14, plainBytes.end(), remappedBytes.end() - 14), "the depth remap flag and mode changed fields outside their vertex request tail");
     for (const std::uint8_t legacyVersion : {32u, 34u}) {
         auto legacyBytes = remappedBytes;
         legacyBytes[4] = legacyVersion;
-        legacyBytes.resize(legacyBytes.size() - 6u);
+        legacyBytes.resize(legacyBytes.size() - 19u);
         const auto legacy = serializer.Deserialize(encodeBase64(legacyBytes));
         require(!legacy.request.target.depthRangeRemap && legacy.request.context.vertex.has_value() && legacy.request.context.vertex->depthRemapMode == 0u, ("a version " + std::to_string(legacyVersion) + " vertex request read depth remap fields").c_str());
         require(serializer.Serialize(legacy.request) == plain, ("a version " + std::to_string(legacyVersion) + " vertex request misread the fields before the depth remap").c_str());
     }
     auto version35 = remappedBytes;
     version35[4] = 35u;
-    version35.pop_back();
+    version35.resize(version35.size() - 14u);
     const auto replay35 = serializer.Deserialize(encodeBase64(version35));
     require(replay35.request.target.depthRangeRemap && replay35.request.context.vertex->depthRemapMode == 2u && !replay35.request.target.float32FlushToZero && serializer.Serialize(replay35.request) == remapped, "a version 35 request misread the depth remap fields or read an f32 flush flag");
     auto truncated = remappedBytes;
-    truncated.resize(truncated.size() - 2u);
+    truncated.resize(truncated.size() - 15u);
     expectFailure([&] { static_cast<void>(serializer.Deserialize(encodeBase64(truncated))); }, "truncated data", "a truncated depth remap mode was accepted");
     auto trailing = remappedBytes;
     trailing.push_back(0u);
