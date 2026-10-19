@@ -33,6 +33,16 @@ static constexpr std::size_t FRAME_MARGIN = 2 * FRAME_SIZE;
 static constexpr std::size_t HOST_CALL_STACK = 256 * 1024;
 static constexpr std::size_t STACK_SIZES[] = {16384, 65536, 1u << 20, 16u << 20};
 
+#ifdef __linux__
+extern bool GuestThreadStackHostRangeOverlaps(std::uintptr_t start, std::uintptr_t end);
+static std::atomic<unsigned> observedUnmaps{0};
+
+static void ObserveUnmap(std::uintptr_t address, std::size_t bytes) {
+    if (GuestThreadStackHostRangeOverlaps(address, address + bytes)) std::abort();
+    observedUnmaps.fetch_add(1, std::memory_order_relaxed);
+}
+#endif
+
 thread_local unsigned char threadLocalBlock[512 * 1024];
 
 static void Require(bool value) { if (!value) std::abort(); }
@@ -131,6 +141,9 @@ static bool ReusesOneOf(const StackProbe& probe, const StackProbe* previous, std
 #endif
 
 int main() {
+#ifdef __linux__
+    GuestAllocations::GuestAllocationsSetUnmapObserver_nid_postfix(&ObserveUnmap);
+#endif
     for (auto stackSize : STACK_SIZES) {
         PthreadAttr attr = nullptr;
         Require(scePthreadAttrInit(&attr) == SCE_OK);
@@ -197,5 +210,19 @@ int main() {
     Require(scePthreadJoin(detachedThread, nullptr) == SCE_OK);
     Require(ReusesOneOf(detachedReuse, detached, 5));
     Require(*reinterpret_cast<const std::uintptr_t*>(detachedReuse.markerAddress) == detachedReuse.marker);
+
+    for (std::size_t stackSize = 4u << 20; stackSize <= 20u << 20; stackSize += 1u << 20) {
+        PthreadAttr attr = nullptr;
+        Require(scePthreadAttrInit(&attr) == SCE_OK);
+        Require(scePthreadAttrSetstacksize(&attr, stackSize) == SCE_OK);
+        Pthread thread = nullptr;
+        Require(scePthreadCreate(&thread, &attr, Worker, &stackSize, nullptr) == SCE_OK);
+        Require(scePthreadAttrDestroy(&attr) == SCE_OK);
+        void* result = nullptr;
+        Require(scePthreadJoin(thread, &result) == SCE_OK);
+        Require(result == &stackSize);
+    }
+    Require(observedUnmaps.load(std::memory_order_relaxed) != 0);
+    GuestAllocations::GuestAllocationsSetUnmapObserver_nid_postfix(nullptr);
 #endif
 }
