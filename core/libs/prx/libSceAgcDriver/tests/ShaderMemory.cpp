@@ -5093,25 +5093,25 @@ void verifyDepthRemapRequests() {
     const auto replay = serializer.Deserialize(remapped);
     require(replay.request.target.depthRangeRemap && replay.request.context.vertex.has_value() && replay.request.context.vertex->paClVsOutCntl == 0x89abcdefu, "the depth remap target flag or the vertex info did not round-trip");
     require(replay.request.context.vertex->depthRemapMode == 2u, "the depth remap mode did not round-trip");
-    require(serializer.Serialize(replay.request) == remapped, "a version 35 depth remap request changed on re-serialization");
+    require(serializer.Serialize(replay.request) == remapped, "a version 37 depth remap request changed on re-serialization");
     const auto plainBytes = decodeBase64(plain);
     const auto remappedBytes = decodeBase64(remapped);
-    require(plainBytes.size() == remappedBytes.size() && plainBytes.size() > 5u && std::equal(plainBytes.begin(), plainBytes.end() - 6, remappedBytes.begin()), "the depth remap flag and mode are not the last 6 bytes before the f32 flush flag of a vertex request");
+    require(plainBytes.size() == remappedBytes.size() && plainBytes.size() > 19u && std::equal(plainBytes.begin(), plainBytes.end() - 19, remappedBytes.begin()) && std::equal(plainBytes.end() - 14, plainBytes.end(), remappedBytes.end() - 14), "the depth remap flag and mode changed fields outside their vertex request tail");
     for (const std::uint8_t legacyVersion : {32u, 34u}) {
         auto legacyBytes = remappedBytes;
         legacyBytes[4] = legacyVersion;
-        legacyBytes.resize(legacyBytes.size() - 6u);
+        legacyBytes.resize(legacyBytes.size() - 19u);
         const auto legacy = serializer.Deserialize(encodeBase64(legacyBytes));
         require(!legacy.request.target.depthRangeRemap && legacy.request.context.vertex.has_value() && legacy.request.context.vertex->depthRemapMode == 0u, ("a version " + std::to_string(legacyVersion) + " vertex request read depth remap fields").c_str());
         require(serializer.Serialize(legacy.request) == plain, ("a version " + std::to_string(legacyVersion) + " vertex request misread the fields before the depth remap").c_str());
     }
     auto version35 = remappedBytes;
     version35[4] = 35u;
-    version35.pop_back();
+    version35.resize(version35.size() - 14u);
     const auto replay35 = serializer.Deserialize(encodeBase64(version35));
     require(replay35.request.target.depthRangeRemap && replay35.request.context.vertex->depthRemapMode == 2u && !replay35.request.target.float32FlushToZero && serializer.Serialize(replay35.request) == remapped, "a version 35 request misread the depth remap fields or read an f32 flush flag");
     auto truncated = remappedBytes;
-    truncated.resize(truncated.size() - 2u);
+    truncated.resize(truncated.size() - 15u);
     expectFailure([&] { static_cast<void>(serializer.Deserialize(encodeBase64(truncated))); }, "truncated data", "a truncated depth remap mode was accepted");
     auto trailing = remappedBytes;
     trailing.push_back(0u);
