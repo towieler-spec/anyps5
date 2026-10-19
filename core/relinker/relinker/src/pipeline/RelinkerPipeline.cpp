@@ -374,14 +374,18 @@ RelinkResult RelinkerPipeline::Relink() {
         validationPolicy->ValidateRelocationTypeSupported(ref.RelocationTypeValue, ref.RelocationTableOffset);
 
     std::vector<std::pair<VirtualAddress, VirtualAddress>> unwindRanges;
-    if (std::any_of(programHeaders.begin(), programHeaders.end(), [](const ProgramHeader& ph) { return ph.Type == PT_SCE_DYNLIBDATA; })) {
+    const bool sceImage = std::any_of(programHeaders.begin(), programHeaders.end(), [](const ProgramHeader& ph) { return ph.Type == PT_SCE_DYNLIBDATA; });
+    const bool hasEhFrame = sceImage || std::any_of(programHeaders.begin(), programHeaders.end(), [](const ProgramHeader& ph) { return ph.Type == PT_GNU_EH_FRAME; });
+    if (hasEhFrame) {
         const auto functions = UnusedNidFilter::ReadExceptionFunctions(raw, programHeaders, {}, {});
         for (const auto& function : functions) unwindRanges.emplace_back(function.Begin, function.End);
         std::sort(unwindRanges.begin(), unwindRanges.end());
-        for (auto& [segment, segmentVAddr, segmentFileOffset] : executableSegments) {
-            static_cast<void>(segmentFileOffset);
-            if (const auto codeEnd = FindSceCodeEnd(segment, segmentVAddr, functions, gotVAddr, dynJmpRelSize))
-                segment.resize(*codeEnd - segmentVAddr);
+        if (sceImage) {
+            for (auto& [segment, segmentVAddr, segmentFileOffset] : executableSegments) {
+                static_cast<void>(segmentFileOffset);
+                if (const auto codeEnd = FindSceCodeEnd(segment, segmentVAddr, functions, gotVAddr, dynJmpRelSize))
+                    segment.resize(*codeEnd - segmentVAddr);
+            }
         }
     }
 

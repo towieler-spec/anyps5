@@ -3,6 +3,8 @@
 #include <codegen/CodegenException.hpp>
 #include <algorithm>
 #include <cstring>
+#include <optional>
+#include <set>
 
 namespace Relinker {
 
@@ -67,6 +69,20 @@ std::size_t TablesEnd(std::span<const std::uint8_t> code, std::size_t firstTable
     return table;
 }
 
+bool HasUndecodableBytes(std::span<const std::uint8_t> code, const Codegen::X64InstructionDecoder& decoder) {
+    for (std::size_t position = 0; position < code.size();) {
+        if (OnlyPadding(code, position, decoder)) return false;
+        try {
+            const auto info = decoder.DecodeInstruction(code.data() + position, code.size() - position);
+            if (info.Length == 0 || info.Length > code.size() - position) return true;
+            position += info.Length;
+        } catch (const Codegen::CodegenException&) {
+            return true;
+        }
+    }
+    return false;
+}
+
 }
 
 std::size_t FindTrailingRelativeJumpTable(std::span<const std::uint8_t> code) {
@@ -115,6 +131,62 @@ std::size_t FindTrailingRelativeJumpTable(std::span<const std::uint8_t> code) {
 std::vector<RelativeJumpTable> FindRelativeJumpTables(std::span<const std::uint8_t> segment, VirtualAddress segmentVAddr, const std::vector<std::pair<VirtualAddress, VirtualAddress>>& functions) {
     std::vector<RelativeJumpTable> tables;
     const auto segmentEnd = segmentVAddr + segment.size();
+    const Codegen::X64InstructionDecoder decoder;
+    std::set<VirtualAddress> branchTargets;
+    for (const auto& [funcBegin, funcEnd] : functions) {
+        if (funcBegin < segmentVAddr || funcBegin >= segmentEnd || funcEnd <= funcBegin) continue;
+        const auto inspectFuncEnd = std::min(funcEnd, segmentEnd);
+        const auto funcCode = segment.subspan(funcBegin - segmentVAddr, inspectFuncEnd - funcBegin);
+        for (std::size_t pos = 0; pos < funcCode.size();) {
+            Codegen::DecodedInstructionInfo info;
+            try {
+                info = decoder.DecodeInstruction(funcCode.data() + pos, funcCode.size() - pos);
+            } catch (const Codegen::CodegenException&) {
+                break;
+            }
+            if (info.Length == 0 || info.Length > funcCode.size() - pos) break;
+            if (info.HasBranchTarget && !info.HasRipRelativeDisp) {
+                const auto target = static_cast<std::int64_t>(funcBegin + pos + info.Length) + info.BranchDisp;
+                if (target >= static_cast<std::int64_t>(segmentVAddr) && target < static_cast<std::int64_t>(segmentEnd))
+                    branchTargets.insert(static_cast<VirtualAddress>(target));
+            }
+            pos += info.Length;
+        }
+    }
+    std::vector<VirtualAddress> pendingTargets(branchTargets.begin(), branchTargets.end());
+    std::set<VirtualAddress> exploredGaps;
+    while (!pendingTargets.empty()) {
+        const auto current = pendingTargets.back();
+        pendingTargets.pop_back();
+        if (current < segmentVAddr || current >= segmentEnd) continue;
+        bool inKnownFunction = false;
+        for (const auto& [funcBegin, funcEnd] : functions) {
+            if (current >= funcBegin && current < funcEnd) {
+                inKnownFunction = true;
+                break;
+            }
+        }
+        if (inKnownFunction || !exploredGaps.insert(current).second) continue;
+        auto pos = static_cast<std::size_t>(current - segmentVAddr);
+        while (pos < segment.size()) {
+            Codegen::DecodedInstructionInfo info;
+            try {
+                info = decoder.DecodeInstruction(segment.data() + pos, segment.size() - pos);
+            } catch (const Codegen::CodegenException&) {
+                break;
+            }
+            if (info.Length == 0 || info.Length > segment.size() - pos) break;
+            if (info.HasBranchTarget && !info.HasRipRelativeDisp) {
+                const auto target = static_cast<std::int64_t>(segmentVAddr + pos + info.Length) + info.BranchDisp;
+                if (target >= static_cast<std::int64_t>(segmentVAddr) && target < static_cast<std::int64_t>(segmentEnd)) {
+                    const auto targetVAddr = static_cast<VirtualAddress>(target);
+                    if (branchTargets.insert(targetVAddr).second) pendingTargets.push_back(targetVAddr);
+                }
+            }
+            if (info.FlowKind == Codegen::ControlFlowKind::Return || info.FlowKind == Codegen::ControlFlowKind::IndirectJump || info.FlowKind == Codegen::ControlFlowKind::Trap) break;
+            pos += info.Length;
+        }
+    }
     for (std::size_t index = 0; index < functions.size(); ++index) {
         const auto [begin, end] = functions[index];
         if (begin < segmentVAddr || begin >= segmentEnd || end <= begin) continue;
@@ -122,8 +194,44 @@ std::vector<RelativeJumpTable> FindRelativeJumpTables(std::span<const std::uint8
         if (index + 1 < functions.size() && functions[index + 1].first > inspectEnd && functions[index + 1].first - inspectEnd <= MaxTableGapAfterFunction)
             inspectEnd = std::min(functions[index + 1].first, segmentEnd);
         const auto code = segment.subspan(begin - segmentVAddr, inspectEnd - begin);
-        if (const auto tail = FindTrailingRelativeJumpTable(code); tail != 0 && tail < code.size())
+        if (const auto tail = FindTrailingRelativeJumpTable(code); tail != 0 && tail < code.size()) {
             tables.push_back({begin, begin + tail, inspectEnd});
+            continue;
+        }
+        if (inspectEnd <= end) continue;
+        const auto funcCode = segment.subspan(begin - segmentVAddr, end - begin);
+        std::optional<VirtualAddress> candidateTable;
+        bool sawIndirectJump = false;
+        for (std::size_t pos = 0; pos < funcCode.size();) {
+            Codegen::DecodedInstructionInfo info;
+            try {
+                info = decoder.DecodeInstruction(funcCode.data() + pos, funcCode.size() - pos);
+            } catch (const Codegen::CodegenException&) {
+                break;
+            }
+            if (info.Length == 0 || info.Length > funcCode.size() - pos) break;
+            if (info.FlowKind == Codegen::ControlFlowKind::IndirectJump) sawIndirectJump = true;
+            const auto next = pos + info.Length;
+            if (info.HasRipRelativeDisp && !info.IsTwoByteOpcode && info.OpcodeOffset < info.Length && info.Length >= 4 && funcCode[pos + info.OpcodeOffset] == 0x8d) {
+                std::int32_t displacement = 0;
+                std::memcpy(&displacement, funcCode.data() + next - 4, sizeof(displacement));
+                const auto target = static_cast<std::int64_t>(begin + next) + displacement;
+                if (target >= static_cast<std::int64_t>(end) && target < static_cast<std::int64_t>(inspectEnd)) {
+                    const auto targetVAddr = static_cast<VirtualAddress>(target);
+                    candidateTable = candidateTable ? std::min(*candidateTable, targetVAddr) : targetVAddr;
+                }
+            }
+            pos = next;
+        }
+        if (sawIndirectJump || !candidateTable) continue;
+        const auto tableVAddr = *candidateTable;
+        const auto paddingCode = segment.subspan(end - segmentVAddr, tableVAddr - end);
+        if (!OnlyPadding(paddingCode, 0, decoder)) continue;
+        const auto it = branchTargets.lower_bound(tableVAddr);
+        if (it != branchTargets.end() && *it < inspectEnd) continue;
+        const auto tableCode = segment.subspan(tableVAddr - segmentVAddr, inspectEnd - tableVAddr);
+        if (!HasUndecodableBytes(tableCode, decoder)) continue;
+        tables.push_back({begin, tableVAddr, inspectEnd});
     }
     return tables;
 }

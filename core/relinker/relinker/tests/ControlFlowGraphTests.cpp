@@ -210,7 +210,64 @@ void CheckRelativeJumpTables() {
     Bytes nonPadding = text;
     nonPadding.back() = 0x55;
     Require(Relinker::FindTrailingRelativeJumpTable(nonPadding) == nonPadding.size(), "Table followed by non-padding bytes was accepted");
+}
 
+void CheckEmbeddedDataTables() {
+    constexpr std::size_t tableOffset = 24;
+    Bytes text(48, 0x90);
+    text[0] = 0x48;
+    text[1] = 0x8d;
+    text[2] = 0x05;
+    SetDisplacement(text, 3, 7, TextAddress + tableOffset);
+    text[7] = 0xc3;
+    for (std::size_t i = 8; i < tableOffset; ++i) text[i] = 0xcc;
+    text[tableOffset] = 0x0f;
+    text[tableOffset + 1] = 0x78;
+    text[tableOffset + 2] = 0x33;
+    text[tableOffset + 3] = 0x1e;
+
+    const std::vector<std::pair<VirtualAddress, VirtualAddress>> functions{
+        {TextAddress, TextAddress + 8},
+        {TextAddress + text.size(), TextAddress + text.size() + 8}
+    };
+    const auto tables = Relinker::FindRelativeJumpTables(text, TextAddress, functions);
+    Require(tables.size() == 1, "Expected one embedded data table");
+    Require(tables[0].Function == TextAddress && tables[0].Begin == TextAddress + tableOffset && tables[0].End == TextAddress + text.size(), "Embedded data table range was incorrect");
+
+    Bytes withBranch = text;
+    withBranch[7] = 0xe8;
+    SetDisplacement(withBranch, 8, 12, TextAddress + tableOffset);
+    withBranch[12] = 0xc3;
+    const std::vector<std::pair<VirtualAddress, VirtualAddress>> functionsWithBranch{
+        {TextAddress, TextAddress + 13},
+        {TextAddress + withBranch.size(), TextAddress + withBranch.size() + 8}
+    };
+    const auto tablesWithBranch = Relinker::FindRelativeJumpTables(withBranch, TextAddress, functionsWithBranch);
+    Require(tablesWithBranch.empty(), "Branch target was incorrectly recognized as a data table");
+
+    Bytes withValidCode = text;
+    withValidCode[tableOffset] = 0x48;
+    withValidCode[tableOffset + 1] = 0x89;
+    withValidCode[tableOffset + 2] = 0xc0;
+    withValidCode[tableOffset + 3] = 0xc3;
+    for (std::size_t i = tableOffset + 4; i < withValidCode.size(); ++i) withValidCode[i] = 0xcc;
+    const auto tablesWithValidCode = Relinker::FindRelativeJumpTables(withValidCode, TextAddress, functions);
+    Require(tablesWithValidCode.empty(), "Valid unannotated code in gap was incorrectly recognized as a data table");
+
+    Bytes withTransitiveBranch = text;
+    withTransitiveBranch[7] = 0xe8;
+    SetDisplacement(withTransitiveBranch, 8, 12, TextAddress + 16);
+    withTransitiveBranch[12] = 0xc3;
+    for (std::size_t i = 13; i < 16; ++i) withTransitiveBranch[i] = 0xcc;
+    withTransitiveBranch[16] = 0xe9;
+    SetDisplacement(withTransitiveBranch, 17, 21, TextAddress + tableOffset);
+    for (std::size_t i = 21; i < tableOffset; ++i) withTransitiveBranch[i] = 0xcc;
+    const std::vector<std::pair<VirtualAddress, VirtualAddress>> functionsTransitive{
+        {TextAddress, TextAddress + 13},
+        {TextAddress + withTransitiveBranch.size(), TextAddress + withTransitiveBranch.size() + 8}
+    };
+    const auto tablesTransitive = Relinker::FindRelativeJumpTables(withTransitiveBranch, TextAddress, functionsTransitive);
+    Require(tablesTransitive.empty(), "Transitive branch target was incorrectly recognized as a data table");
 }
 
 }
@@ -227,6 +284,7 @@ int main() {
         CheckAddressOverflow();
         CheckHighVirtualAddress();
         CheckRelativeJumpTables();
+        CheckEmbeddedDataTables();
         std::cout << "Control-flow graph tests passed\n";
         return 0;
     } catch (const std::exception& error) {

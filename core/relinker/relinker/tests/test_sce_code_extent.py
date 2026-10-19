@@ -22,15 +22,18 @@ POINTER = 0xB00
 INTERPRETER = b"/libexec/ld-elf.so.1\0"
 OVERLAPPING = bytes.fromhex("b8 64 c3 90 90 72 fa c3")
 UNSUPPORTED_TLS = bytes.fromhex("64 2d 65 6c 66 2e c3")
+LATER_FUNCTION = 0x300
 
 
 def fixture(sce_block=True, plt_push_offset=8, gap=0, interpreter_pointer=False, data_pointer=False, gap_entry=False,
-            plt_at=None, early_function=False, function_tls=False):
-    plt = FUNCTION + FUNCTION_SIZE + gap if plt_at is None else plt_at
+            plt_at=None, early_function=False, function_tls=False, gap_embedded_data=False):
+    plt = (LATER_FUNCTION + FUNCTION_SIZE + gap if gap_embedded_data else FUNCTION + FUNCTION_SIZE + gap) if plt_at is None else plt_at
     entry = FUNCTION + FUNCTION_SIZE if gap_entry else FUNCTION
     data = plt + 0x20 if plt > FUNCTION else FUNCTION + FUNCTION_SIZE
     functions = [(EARLY_FUNCTION, FUNCTION_SIZE)] if early_function else []
     functions.append((FUNCTION, FUNCTION_SIZE))
+    if gap_embedded_data:
+        functions.append((LATER_FUNCTION, FUNCTION_SIZE))
     interpreter = FUNCTION - len(INTERPRETER)
     image = bytearray(0x1000)
     image[:16] = b"\x7fELF\x02\x01\x01" + bytes(9)
@@ -65,7 +68,8 @@ def fixture(sce_block=True, plt_push_offset=8, gap=0, interpreter_pointer=False,
 
     for begin, size in functions:
         image[begin:begin + size] = b"\xc3" + b"\x90" * (size - 1)
-    image[FUNCTION + FUNCTION_SIZE:plt] = b"\x90" * gap
+    last_func = LATER_FUNCTION if gap_embedded_data else FUNCTION
+    image[last_func + FUNCTION_SIZE:plt] = b"\x90" * gap
     image[plt:plt + 2] = b"\xff\x35"
     struct.pack_into("<i", image, plt + 2, GOT + plt_push_offset - (plt + 6))
     image[plt + 6:plt + 8] = b"\xff\x25"
@@ -86,6 +90,13 @@ def fixture(sce_block=True, plt_push_offset=8, gap=0, interpreter_pointer=False,
         image[entry:entry + len(UNSUPPORTED_TLS)] = UNSUPPORTED_TLS
     if function_tls:
         image[FUNCTION:FUNCTION + len(UNSUPPORTED_TLS)] = UNSUPPORTED_TLS
+    if gap_embedded_data:
+        table = FUNCTION + FUNCTION_SIZE + 0x10
+        image[FUNCTION:FUNCTION + 3] = b"\x48\x8d\x05"
+        struct.pack_into("<iB", image, FUNCTION + 3, table - (FUNCTION + 7), 0xC3)
+        image[FUNCTION + FUNCTION_SIZE:table] = b"\xcc" * 0x10
+        image[table:LATER_FUNCTION] = b"\x0f\x78\x33\x1e" * ((LATER_FUNCTION - table) // 4)
+        image[data:data + 0x30] = b"\x90" * 0x30
 
     cie = EH_FRAME
     cie_body = b"\x00\x00\x00\x00\x01zR\x00\x01\x78\x10\x01\x1b\x00\x00\x00"
@@ -149,6 +160,8 @@ def main():
                 fixture(plt_at=PLT_BEFORE_CODE, early_function=True), target=target)
             run(relinker, work, "sce-code-after-plt-" + target, fixture(plt_at=PLT_BEFORE_CODE, function_tls=True),
                 "Unsupported " + ("Windows" if target == "windows" else "macOS") + " guest TLS instruction", target)
+            run(relinker, work, "sce-gap-embedded-data-" + target,
+                fixture(sce_block=True, gap_embedded_data=True), target=target)
     print("SCE code extent tests passed")
 
 
