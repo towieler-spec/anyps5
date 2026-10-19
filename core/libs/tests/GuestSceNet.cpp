@@ -37,6 +37,7 @@ int APS5_VABI sceNetBind_nid_postfix(int, const void*, std::uint32_t);
 int APS5_VABI sceNetListen(int, int);
 int APS5_VABI sceNetGetsockname(int, void*, std::uint32_t*);
 int APS5_VABI sceNetGetpeername(int, void*, std::uint32_t*);
+int APS5_VABI sceNetGetSockInfo(int, void*, int, int);
 int APS5_VABI sceNetConnect(int, const void*, std::uint32_t);
 int APS5_VABI sceNetAccept(int, void*, std::uint32_t*);
 std::int64_t APS5_VABI sceNetSend(int, const void*, std::size_t, int);
@@ -1110,6 +1111,80 @@ static void CheckCloseKernelSocket() {
     Require(Failed(sceNetSocketClose(kernel), 9));
 }
 
+static std::array<std::uint8_t, 0xa0> RequireSockInfo(int socket, int type, int flags, const std::array<std::uint8_t, 16>& local,
+    const std::array<std::uint8_t, 16>& remote) {
+    std::array<std::uint8_t, 0x140> records;
+    records.fill(0xa5);
+    Require(sceNetGetSockInfo(socket, records.data(), 2, 0) == 1);
+    std::array<std::uint8_t, 0xa0> expected{};
+    std::memcpy(expected.data() + 0x24, &socket, sizeof(socket));
+    expected[0x28] = static_cast<std::uint8_t>(type);
+    std::memcpy(expected.data() + 0x34, local.data() + 4, 4);
+    std::memcpy(expected.data() + 0x38, remote.data() + 4, 4);
+    std::memcpy(expected.data() + 0x3c, local.data() + 2, 2);
+    std::memcpy(expected.data() + 0x3e, remote.data() + 2, 2);
+    std::memcpy(expected.data() + 0x48, &flags, sizeof(flags));
+    for (const auto [offset, option] : {std::array{0x64, 0x1002}, std::array{0x68, 0x1001}}) {
+        int size = 0;
+        std::uint32_t length = sizeof(size);
+        Require(sceNetGetsockopt(socket, 0xffff, option, &size, &length) == 0 && size > 0);
+        std::memcpy(expected.data() + offset, &size, sizeof(size));
+    }
+    Require(std::equal(expected.begin(), expected.end(), records.begin()));
+    Require(std::all_of(records.begin() + 0xa0, records.end(), [](auto byte) { return byte == 0xa5; }));
+    return expected;
+}
+
+static void CheckSockInfo() {
+    const std::array<std::uint8_t, 16> unnamed{};
+    const int datagram = sceNetSocket("sockinfo-datagram", 2, 2, 17);
+    Require(datagram >= 0);
+    RequireSockInfo(datagram, 2, 1, unnamed, unnamed);
+    std::array<std::uint8_t, 16> datagramAddress{16, 2, 0, 0, 127, 0, 0, 1};
+    Require(sceNetBind_nid_postfix(datagram, datagramAddress.data(), datagramAddress.size()) == 0);
+    std::uint32_t size = datagramAddress.size();
+    Require(sceNetGetsockname(datagram, datagramAddress.data(), &size) == 0 && size == 16);
+    RequireSockInfo(datagram, 2, 1, datagramAddress, unnamed);
+    const int listener = sceNetSocket("sockinfo-listener", 2, 1, 6);
+    std::array<std::uint8_t, 16> listening{16, 2, 0, 0, 127, 0, 0, 1};
+    Require(listener >= 0 && sceNetBind_nid_postfix(listener, listening.data(), listening.size()) == 0 && sceNetListen(listener, 1) == 0);
+    size = listening.size();
+    Require(sceNetGetsockname(listener, listening.data(), &size) == 0 && size == 16);
+    RequireSockInfo(listener, 1, 1, listening, unnamed);
+    const int client = sceNetSocket("sockinfo-client", 2, 1, 6);
+    Require(client >= 0 && sceNetConnect(client, listening.data(), listening.size()) == 0);
+    const int accepted = sceNetAccept(listener, nullptr, nullptr);
+    Require(accepted >= 0);
+    std::array<std::uint8_t, 16> clientAddress{};
+    size = clientAddress.size();
+    Require(sceNetGetsockname(client, clientAddress.data(), &size) == 0 && size == 16);
+    RequireSockInfo(client, 1, 1, clientAddress, listening);
+    RequireSockInfo(accepted, 1, 1, listening, clientAddress);
+    Require(sceNetConnect(datagram, listening.data(), listening.size()) == 0);
+    RequireSockInfo(datagram, 2, 1, datagramAddress, listening);
+    const int nonblocking = 1;
+    const std::array<int, 2> buffers{65536, 32768};
+    Require(sceNetSetsockopt(datagram, 0xffff, 0x1200, &nonblocking, sizeof(nonblocking)) == 0);
+    Require(sceNetSetsockopt(datagram, 0xffff, 0x1002, &buffers[0], sizeof(buffers[0])) == 0);
+    Require(sceNetSetsockopt(datagram, 0xffff, 0x1001, &buffers[1], sizeof(buffers[1])) == 0);
+    const auto configured = RequireSockInfo(datagram, 2, 0x200001, datagramAddress, listening);
+    Require(std::memcmp(configured.data() + 0x64, buffers.data(), sizeof(buffers)) == 0);
+    std::array<std::uint8_t, 0xa0> record;
+    record.fill(0xa5);
+    Require(Failed(sceNetGetSockInfo(datagram, nullptr, 1, 0), 22));
+    Require(Failed(sceNetGetSockInfo(datagram, record.data(), 0, 0), 22));
+    const auto throws = [&](int socket, int flags) {
+        try { sceNetGetSockInfo(socket, record.data(), 1, flags); } catch (const std::runtime_error&) { return true; }
+        return false;
+    };
+    Require(throws(-1, 0) && throws(datagram, 1));
+    const int inet6 = sceNetSocket("sockinfo-inet6", 28, 2, 17);
+    Require(inet6 >= 0 ? throws(inet6, 0) && sceNetSocketClose(inet6) == 0 : *sceNetErrnoLoc() == 47);
+    Require(std::all_of(record.begin(), record.end(), [](auto byte) { return byte == 0xa5; }));
+    for (const int descriptor : {accepted, client, listener, datagram}) Require(sceNetSocketClose(descriptor) == 0);
+    Require(Failed(sceNetGetSockInfo(datagram, record.data(), 1, 0), 9));
+}
+
 static void CheckDatagramDisconnect() {
     const int peer = sceNetSocket("disconnect-peer", 2, 2, 17);
     const int other = sceNetSocket("disconnect-other", 2, 2, 17);
@@ -1187,6 +1262,7 @@ int main() {
     }
     CheckDatagramDisconnect();
     CheckCloseKernelSocket();
+    CheckSockInfo();
 
     const int closed = sceNetSocket("closed-by-kernel", 2, 2, 17);
     Require(closed >= 0);
