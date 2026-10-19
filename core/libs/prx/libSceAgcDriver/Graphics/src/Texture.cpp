@@ -309,6 +309,13 @@ Texture::Texture(const Context& context, TextureDetiler& detiler, const GuestTex
         Require(!depthCompare || colorFormat == VK_FORMAT_R32_SFLOAT || colorFormat == VK_FORMAT_R16_UNORM, "comparison sampling requires an R32 float or R16 unorm depth texture");
         Require(!depthCompare || descriptor.dimension != TextureDimension::k3D, "comparison sampling does not support 3D depth textures");
         const auto vkFormat = depthCompare ? (colorFormat == VK_FORMAT_R32_SFLOAT ? VK_FORMAT_D32_SFLOAT : VK_FORMAT_D16_UNORM) : colorFormat;
+        if (depthCompare && (descriptor.dimension == TextureDimension::k1D || descriptor.dimension == TextureDimension::k1DArray)) {
+            Require(context.imageFormatProperties != nullptr, "1D depth texture comparison requires image format queries");
+            VkImageFormatProperties properties{};
+            const auto result = context.imageFormatProperties(context.physical, vkFormat, VK_IMAGE_TYPE_1D, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, 0, &properties);
+            if (result != VK_ERROR_FORMAT_NOT_SUPPORTED) Check(result, "vkGetPhysicalDeviceImageFormatProperties 1D depth");
+            Require(result == VK_SUCCESS, "comparison sampling does not support 1D depth textures on this device");
+        }
         const VkImageAspectFlags aspect = depthCompare ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
         if (IsBlockCompressed(descriptor.format)) {
             Require(context.textureCompressionBC, "device does not support BC compressed textures");

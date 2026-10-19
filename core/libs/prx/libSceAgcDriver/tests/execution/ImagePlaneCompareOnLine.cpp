@@ -139,6 +139,12 @@ int main() {
     try {
         const auto device = OpenVulkanTestDevice();
         if (!device) return VulkanTestSkipped;
+        const auto context = device->graphicsContext();
+        VkImageFormatProperties properties{};
+        if (context.imageFormatProperties != nullptr && context.imageFormatProperties(context.physical, VK_FORMAT_D16_UNORM, VK_IMAGE_TYPE_1D, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, 0, &properties) != VK_SUCCESS) {
+            std::puts("skipped: device does not support 1D depth images");
+            return VulkanTestSkipped;
+        }
         FillLine();
         FillInput();
         Run(*device, LevelZeroCode);
