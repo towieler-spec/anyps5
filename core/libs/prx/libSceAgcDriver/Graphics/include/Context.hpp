@@ -8,6 +8,7 @@
 #include <vulkan/vulkan.h>
 #include <atomic>
 #include <cstdint>
+#include <optional>
 #include <cstdio>
 #include <functional>
 #include <memory>
@@ -195,6 +196,10 @@ struct Context {
     bool samplerFilterMinmax = false;
     bool nonSeamlessCubeMap = false;
     VkSampleCountFlags mergedCoverageSampleCounts = 0;
+    bool customBorderColor = false;
+    std::uint32_t maxCustomBorderColorSamplers = 0;
+    std::atomic<std::uint32_t>* customBorderColorSamplers = nullptr;
+    std::optional<std::uint64_t> borderColorTable;
     bool conservativeRasterization = false;
     bool meshWave32 = false;
     VkBuffer emptyBuffer = VK_NULL_HANDLE;
@@ -331,6 +336,12 @@ struct Context {
         return HostMemoryType(mask);
     }
 };
+
+inline Context WithBorderColorTable(const Context& context, std::optional<std::uint64_t> base) {
+    auto result = context;
+    result.borderColorTable = base;
+    return result;
+}
 
 inline void EndRenderPass(const Context& context, VkCommandBuffer commands) {
     if (context.graphicsPipelineLibrary) context.Resolved(&DeviceFunctions::cmdEndRendering, "vkCmdEndRenderingKHR")(commands);
