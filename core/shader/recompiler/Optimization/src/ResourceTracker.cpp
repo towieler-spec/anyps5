@@ -691,6 +691,47 @@ private:
         return true;
     }
 
+    IrValue* UnwrapTableRead(IrValue* value) const {
+        if (value == nullptr) return nullptr;
+        value = value->Resolve();
+        if (!value->IsPhi()) return value;
+        IrValue* candidate = nullptr;
+        std::vector<IrValue*> pending{value};
+        std::unordered_set<const IrValue*> visited;
+        while (!pending.empty()) {
+            auto* current = pending.back()->Resolve();
+            pending.pop_back();
+            if (!visited.insert(current).second) continue;
+            if (current->IsPhi()) {
+                for (std::size_t i = 0; i < current->ArgumentCount(); i++) {
+                    pending.push_back(current->Argument(i));
+                }
+                continue;
+            }
+            std::uint32_t memoryIndex = 0;
+            IrValue* key = nullptr;
+            std::uint32_t stride = 0;
+            std::uint32_t addend = 0;
+            if (ScalarReadMemory(*current, memoryIndex) == nullptr || !MemoryIndexBelongsTo(memoryIndex, *current) ||
+                !MatchAffineOffset(current->Argument(1), key, stride, addend)) {
+                return nullptr;
+            }
+            if (candidate == nullptr) {
+                candidate = current;
+            } else if (!EquivalentValue(m_program.Resources(), candidate, current)) {
+                std::uint32_t candidateIndex = 0;
+                const auto* candMem = ScalarReadMemory(*candidate, candidateIndex);
+                const auto* curMem = ScalarReadMemory(*current, memoryIndex);
+                if (candMem == nullptr || curMem == nullptr || candMem->offset != curMem->offset ||
+                    !EquivalentValue(m_program.Resources(), candidate->Argument(0), current->Argument(0)) ||
+                    !EquivalentValue(m_program.Resources(), candidate->Argument(1), current->Argument(1))) {
+                    return nullptr;
+                }
+            }
+        }
+        return candidate;
+    }
+
     bool TryMakeIndirectColumn(IrValue& handle, IrValue& descriptorPointer, bool sampler, std::uint32_t words, std::uint32_t descriptorOffset, std::uint32_t descriptorImmediate, TableColumnPlan& plan) {
         std::vector<PointerHop> hops;
         IrValue* pointer = &descriptorPointer;
@@ -728,7 +769,10 @@ private:
         IrValue* offset = nullptr;
         std::uint32_t first = 0;
         for (std::uint32_t dword = 0; dword < 2u; dword++) {
-            IrValue* read = pointer->Argument(dword)->Resolve();
+            IrValue* read = UnwrapTableRead(pointer->Argument(dword));
+            if (read == nullptr) {
+                return false;
+            }
             std::uint32_t memoryIndex = 0;
             const MemoryInfo* memory = ScalarReadMemory(*read, memoryIndex);
             if (memory == nullptr || !MemoryIndexBelongsTo(memoryIndex, *read)) {
