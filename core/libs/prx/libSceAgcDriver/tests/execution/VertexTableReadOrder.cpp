@@ -124,7 +124,7 @@ int main() {
             BufferTable[6] = 128u;
         }, reads);
         check(info.resources[0].fields[0] == 0x9000u && info.resources[0].fields[2] == 128u, "the vertex buffer V# was read before the queued store into the vertex buffer table");
-        check(reads.size() == 2 && reads[1].address == Address(BufferTable.data() + 4) && std::memcmp(reads[1].bytes.data(), BufferTable.data() + 4, 16) == 0, "the recorded V# read is not the stored V#");
+        check(reads.size() == 2 && reads[1].address == Address(BufferTable.data() + 4) && std::memcmp(reads[1].Bytes().data(), BufferTable.data() + 4, 16) == 0, "the recorded V# read is not the stored V#");
         check(DrawPipeline::QueuedItems() == 0, "the store into the vertex buffer table is still queued");
 
         info = DecodeBehindQueuedStore(AttribTable.data(), 4, [] { AttribTable[0] = 0x2cu << 5u; }, reads);

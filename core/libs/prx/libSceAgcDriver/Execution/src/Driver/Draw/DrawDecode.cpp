@@ -38,7 +38,7 @@ ShaderRecompiler::ShaderVertexStageInfo DecodeOrderedVertexStageInfo(std::span<c
     };
     auto info = decode();
     if (!DrawPipeline::Active() || !DrawPipeline::Queue0().Busy()) return info;
-    if (std::none_of(reads.begin(), reads.end(), [](const Graphics::DecodeRead& read) { return DrawPipeline::Queue0().Overlaps(read.address, read.bytes.size()); })) return info;
+    if (std::none_of(reads.begin(), reads.end(), [](const Graphics::DecodeRead& read) { return DrawPipeline::Queue0().Overlaps(read.address, read.Bytes().size()); })) return info;
     DrawPipeline::Queue0().Drain(DrawPipeline::DrainReason::Capture);
     return decode();
 }
