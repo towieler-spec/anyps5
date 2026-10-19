@@ -1174,9 +1174,10 @@ int APS5_VABI shutdown_nid_postfix(int descriptor, int how) {
     return 0;
 }
 int APS5_VABI getsockname_nid_postfix(int descriptor, void* address, std::uint32_t* length) {
+    if (!length) return Fail(14);
     const auto socket = Lookup(descriptor);
     if (!socket) return -1;
-    if (!address || !length) return Fail(14);
+    if (!address) return Fail(14);
     if (socket->family == GuestUnix) return UnnamedAddress(address, length);
     sockaddr_storage native{};
     socklen_t size = sizeof(native);
@@ -1193,9 +1194,10 @@ int APS5_VABI getsockname_nid_postfix(int descriptor, void* address, std::uint32
     return 0;
 }
 int APS5_VABI getpeername_nid_postfix(int descriptor, void* address, std::uint32_t* length) {
+    if (!length) return Fail(14);
     const auto socket = Lookup(descriptor);
     if (!socket) return -1;
-    if (!address || !length) return Fail(14);
+    if (!address) return Fail(14);
     if (socket->family == GuestUnix) return UnnamedAddress(address, length);
     sockaddr_storage native{};
     socklen_t size = sizeof(native);
