@@ -102,14 +102,15 @@ def registered(build):
                 test = [arguments[1:], False]
                 tests.append(test)
                 latest[arguments[0]] = test
-            elif command == "set_tests_properties" and "PROPERTIES" in arguments:
-                properties = arguments.index("PROPERTIES")
-                values = arguments[properties + 1:]
-                for key, value in zip(values[::2], values[1::2]):
-                    if key == "DISABLED":
-                        for name in arguments[:properties]:
-                            if name in latest:
-                                latest[name][1] = value.upper() in ("1", "ON", "YES", "TRUE", "Y")
+            elif command == "set_tests_properties":
+                properties = next((i for i, a in enumerate(arguments) if a.upper() == "PROPERTIES"), None)
+                if properties is not None:
+                    values = arguments[properties + 1:]
+                    for key, value in zip(values[::2], values[1::2]):
+                        if key.upper() == "DISABLED":
+                            for name in arguments[:properties]:
+                                if name in latest:
+                                    latest[name][1] = value.upper() in ("1", "ON", "YES", "TRUE", "Y")
         for arguments, disabled in tests:
             if disabled:
                 continue

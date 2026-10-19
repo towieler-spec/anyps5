@@ -25,6 +25,13 @@ class RegistrationTests(unittest.TestCase):
                 names = self.registered(content)
                 self.assertEqual("buffer_bounds_tests" in names, "OFF" in configurations)
 
+    def test_case_insensitive_properties_and_disabled(self):
+        for properties_kw, disabled_kw in (("properties", "disabled"), ("PROPERTIES", "disabled"), ("properties", "DISABLED")):
+            with self.subTest(properties=properties_kw, disabled=disabled_kw):
+                content = (f'add_test("bounds" "/build/tests/buffer_bounds_tests")\n'
+                           f'set_tests_properties("bounds" {properties_kw} {disabled_kw} TRUE)\n')
+                self.assertNotIn("buffer_bounds_tests", self.registered(content))
+
 
     def registered(self, content):
         with tempfile.TemporaryDirectory() as directory:
