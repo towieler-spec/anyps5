@@ -113,6 +113,16 @@ SDL and FreeType settings forced by the root `CMakeLists.txt` cannot be overridd
 
 With `ANYPS5_USE_SYSTEM_DEPS=ON` those libraries come from the system (on Debian and Ubuntu: `libsdl2-dev`, `libfreetype-dev`, `libvulkan-dev`, `spirv-headers`, `glslang-dev`, `glslang-tools` and `spirv-tools`). A missing package, Vulkan-Headers older than 1.4.310 (the agc driver uses `VK_KHR_maintenance8`), or an SDL2 without the HIDAPI joystick driver (sdl2-compat over SDL3, or a build with HIDAPI disabled, which breaks the pad and disk-audio tests), fails the configure with an error and never falls back to the submodule. The forced SDL and FreeType settings from the root `CMakeLists.txt` do not apply with the flag ON: the system SDL2 comes with whatever its distribution enabled. The prx libraries are shared objects, so SDL2 is linked from the system as a shared library; the default build keeps its own static SDL2. `ffmpeg-core`, `libjpeg-turbo`, `stb`, `VulkanMemoryAllocator` and `LibAtrac9` always stay bundled and still need `git submodule update --init`.
 
+## 快速语法检查
+
+配置构建目录后，可使用 `tools/check_compile.py` 检查指定源文件。工具从 `compile_commands.json` 或 Ninja 读取编译命令，保留编译选项，并去掉对象文件及依赖文件输出参数。`-MF`、`-MT`、`-MQ` 和 `-MJ` 支持分离及连写形式，避免在 `-Werror` 下因无效的依赖输出参数误报失败。
+
+```sh
+python3 tools/check_compile.py --build build-relinker core/relinker/main.cpp
+```
+
+真实编译错误仍返回失败；语法检查不替代完整构建和测试。
+
 ## Write watch tests
 
 The macOS write watch can be built and tested separately, without submodules or the prx libraries:
