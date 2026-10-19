@@ -29,10 +29,12 @@ struct SpirvTargetOptions {
     bool spannedWaves = false;
     bool robustBufferAccess2 = false;
     bool float32FlushToZero = false;
+    bool largePixelFunctionLdsBuffer = false;
 };
 
 struct SpirvEmitInfo {
     bool fullSubgroups = false;
+    bool functionLdsBuffer = false;
 };
 
 struct SpannedWaveUnsupported : std::runtime_error {

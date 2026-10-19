@@ -4739,7 +4739,7 @@ void verifyPixelRequestSerialization() {
     minimal.context.pixel->layerExported = true;
     minimal.context.pixel->ditheredAlphaToCoverage = true;
     const auto encoded = serializer.Serialize(minimal);
-    require(requestPrefix(encoded, 8u) == "NVNQQSUAAAA=", "new requests did not use serialization version 37");
+    require(requestPrefix(encoded, 8u) == "NVNQQSYAAAA=", "new requests did not use serialization version 38");
     const std::array<std::uint32_t, 2> fallbacks{0x40u, 0x1ac4u};
     auto withFallbacks = minimal;
     withFallbacks.context.linkedCallFallbacks = fallbacks;
@@ -4857,7 +4857,7 @@ void verifyPixelRequestSerialization() {
     for (std::size_t bytes = 0; bytes < 45u; ++bytes) {
         expectFailure([&] { static_cast<void>(serializer.Deserialize(requestPrefix(encoded, mappingOffset + bytes))); }, "truncated data", "a truncated pixel mapping, packing, dual-source, alpha-to-coverage, stencil reference export flag, primitive class, layer export, dither or front-face flag, quad pixel mask or quad sample mask was accepted");
     }
-    for (const auto unsupported : {"NVNQQQAAAAA=", "NVNQQSYAAAA="}) {
+    for (const auto unsupported : {"NVNQQQAAAAA=", "NVNQQScAAAA="}) {
         expectFailure([&] { static_cast<void>(serializer.Deserialize(unsupported)); }, "serialization version", "an unsupported request version was accepted");
     }
     static constexpr std::string_view version18Request{
@@ -5011,6 +5011,7 @@ void verifyVertexInfoVersion19() {
     version30.pop_back();
     version30.pop_back();
     version30.pop_back();
+    version30.pop_back();
     version30.erase(version30.begin() + static_cast<std::ptrdiff_t>(maskOffset + 1u + sampleMaskBytes + 4u), version30.begin() + static_cast<std::ptrdiff_t>(maskOffset + 1u + sampleMaskBytes + 4u + iterationBytes));
     version30[4] = 30u;
     const auto replay30 = serializer.Deserialize(encodeBase64(version30));
@@ -5018,6 +5019,7 @@ void verifyVertexInfoVersion19() {
     auto spanned = sampledPixel;
     spanned.target.spannedWaves = true;
     auto version32 = decodeBase64(serializer.Serialize(spanned));
+    version32.pop_back();
     require(version32.size() > 2u && version32.back() == 0u && version32[version32.size() - 2u] == 0u && version32[version32.size() - 3u] == 1u, "the spanned-waves flag is not the byte before the depth remap flag");
     version32.pop_back();
     version32.pop_back();
@@ -5029,8 +5031,10 @@ void verifyVertexInfoVersion19() {
     version29.pop_back();
     version29.pop_back();
     version29.pop_back();
+    version29.pop_back();
     version29.erase(version29.begin() + static_cast<std::ptrdiff_t>(maskOffset + 1u + sampleMaskBytes), version29.begin() + static_cast<std::ptrdiff_t>(maskOffset + 1u + sampleMaskBytes + 4u + iterationBytes));
     auto version36 = sampledBytes;
+    version36.pop_back();
     version36.erase(version36.begin() + static_cast<std::ptrdiff_t>(maskOffset + 1u + sampleMaskBytes + 4u + iterationBytes - 1u));
     version36[4] = 36u;
     const auto replay36 = serializer.Deserialize(encodeBase64(version36));
@@ -5042,6 +5046,7 @@ void verifyVertexInfoVersion19() {
     version28.pop_back();
     version28.pop_back();
     version28.pop_back();
+    version28.pop_back();
     version28.erase(version28.begin() + static_cast<std::ptrdiff_t>(maskOffset + 1u), version28.begin() + static_cast<std::ptrdiff_t>(maskOffset + 1u + sampleMaskBytes + 4u + iterationBytes));
     version28[4] = 28u;
     const auto replay28 = serializer.Deserialize(encodeBase64(version28));
@@ -5050,11 +5055,13 @@ void verifyVertexInfoVersion19() {
     version27.pop_back();
     version27.pop_back();
     version27.pop_back();
+    version27.pop_back();
     version27.erase(version27.begin() + static_cast<std::ptrdiff_t>(maskOffset), version27.begin() + static_cast<std::ptrdiff_t>(maskOffset + 1u + sampleMaskBytes + 4u + iterationBytes));
     version27[4] = 27u;
     const auto replay27 = serializer.Deserialize(encodeBase64(version27));
     require(replay27.request.context.pixel.has_value() && replay27.request.context.pixel->quadPixelMask == 0xfu && replay27.request.context.pixel->reversedBlend == 0u && serializer.Serialize(replay27.request) == encodedPixel, "a version 27 request read a quad pixel mask or reversed-order blend code, or misread the fields after it");
     auto legacyPixel = plainPixel;
+    legacyPixel.pop_back();
     legacyPixel.pop_back();
     legacyPixel.pop_back();
     legacyPixel.pop_back();
@@ -5107,11 +5114,11 @@ void verifyDepthRemapRequests() {
     require(serializer.Serialize(replay.request) == remapped, "a version 35 depth remap request changed on re-serialization");
     const auto plainBytes = decodeBase64(plain);
     const auto remappedBytes = decodeBase64(remapped);
-    require(plainBytes.size() == remappedBytes.size() && plainBytes.size() > 5u && std::equal(plainBytes.begin(), plainBytes.end() - 6, remappedBytes.begin()), "the depth remap flag and mode are not the last 6 bytes before the f32 flush flag of a vertex request");
+    require(plainBytes.size() == remappedBytes.size() && plainBytes.size() > 6u && std::equal(plainBytes.begin(), plainBytes.end() - 7, remappedBytes.begin()), "the depth remap flag and mode are not the 6 bytes before the f32 flush flag of a vertex request");
     for (const std::uint8_t legacyVersion : {32u, 34u}) {
         auto legacyBytes = remappedBytes;
         legacyBytes[4] = legacyVersion;
-        legacyBytes.resize(legacyBytes.size() - 6u);
+        legacyBytes.resize(legacyBytes.size() - 7u);
         const auto legacy = serializer.Deserialize(encodeBase64(legacyBytes));
         require(!legacy.request.target.depthRangeRemap && legacy.request.context.vertex.has_value() && legacy.request.context.vertex->depthRemapMode == 0u, ("a version " + std::to_string(legacyVersion) + " vertex request read depth remap fields").c_str());
         require(serializer.Serialize(legacy.request) == plain, ("a version " + std::to_string(legacyVersion) + " vertex request misread the fields before the depth remap").c_str());
@@ -5119,10 +5126,11 @@ void verifyDepthRemapRequests() {
     auto version35 = remappedBytes;
     version35[4] = 35u;
     version35.pop_back();
+    version35.pop_back();
     const auto replay35 = serializer.Deserialize(encodeBase64(version35));
     require(replay35.request.target.depthRangeRemap && replay35.request.context.vertex->depthRemapMode == 2u && !replay35.request.target.float32FlushToZero && serializer.Serialize(replay35.request) == remapped, "a version 35 request misread the depth remap fields or read an f32 flush flag");
     auto truncated = remappedBytes;
-    truncated.resize(truncated.size() - 2u);
+    truncated.resize(truncated.size() - 3u);
     expectFailure([&] { static_cast<void>(serializer.Deserialize(encodeBase64(truncated))); }, "truncated data", "a truncated depth remap mode was accepted");
     auto trailing = remappedBytes;
     trailing.push_back(0u);
