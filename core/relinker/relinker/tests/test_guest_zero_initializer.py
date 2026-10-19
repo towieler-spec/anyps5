@@ -9,6 +9,7 @@ import tempfile
 from guest_import_fixtures import executable
 from test_guest_intel_trampolines import main_fixture, pe_sections
 from test_guest_module_args import ARGP, ARGS, GETTER, RETURNED, SETTER, macho_binds
+from test_guest_module_directories import needed_libraries
 from test_guest_module_dir import pe_export_names
 from test_guest_symbol_names import dynamic_tags, imported_symbols
 
@@ -103,6 +104,7 @@ def main():
             assert GETTER in imported_symbols(image), (preinit, imported_symbols(image))
             assert SETTER in imported_symbols(image), (preinit, imported_symbols(image))
             assert dynamic_tags(image).get(12, 0) != 0, (preinit, dynamic_tags(image))
+            assert 'libkernel.prx' in needed_libraries(image), (preinit, needed_libraries(image))
             _, mach_converted = convert(relinker, work / f'macos-{preinit}', preinit, ['--macos'])
             binds = macho_binds(mach_converted.read_bytes())
             assert ('_' + GETTER).encode() in binds, f'the macOS module does not bind {GETTER}'
@@ -128,6 +130,7 @@ def main():
                 libraries.mkdir()
                 provider = libraries / 'libc.prx'
                 shutil.copyfile(host, provider)
+                shutil.copyfile(host, libraries / 'libkernel.prx')
                 events = case / 'events.txt'
                 run = subprocess.run([sys.executable, __file__, '--load', str(provider), str(converted)],
                                      env={**os.environ, 'ANYPS5_GUEST_MODULE_ARGS': str(events)},
