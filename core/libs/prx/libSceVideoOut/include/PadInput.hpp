@@ -5,6 +5,8 @@
 #include "SDL_gamecontroller.h"
 #include "prx/libScePad/include/KeyboardMouse.hpp"
 #include "prx/libScePad/include/PadState.hpp"
+#include "prx/libScePad/include/Pad.hpp"
+#include <array>
 #include <chrono>
 
 class DisplayWindow;
@@ -18,23 +20,29 @@ public:
     bool MouseModeEnabled() const { return keyboardMouse.MouseMode(); }
 
 private:
+    struct ControllerSlot {
+        SDL_GameController* controller = nullptr;
+        SDL_JoystickID instanceId = -1;
+        PadInputState state{};
+        std::uint32_t outputSequence = 0;
+        PadOutputState outputState{};
+        bool outputPending = false;
+        std::chrono::steady_clock::time_point nextRumbleRefresh{};
+    };
+
     explicit PadInput(Pad::InputConfiguration configuration);
     void publish();
+    void publish(int slot);
     void setMouseMode(bool enabled);
-    void openFirstAvailableController();
+    void openAvailableControllers();
     void openController(int deviceIndex);
-    void closeController();
-    PadInputState sampleController() const;
+    void closeController(int slot);
+    PadInputState sampleController(int slot) const;
     void applyOutput();
-    void enableSensors();
+    void enableSensors(int slot);
 
     Pad::KeyboardMouse keyboardMouse;
-    SDL_GameController* controller = nullptr;
-    PadInputState controllerState{};
-    std::uint32_t outputSequence = 0;
-    PadOutputState outputState{};
-    bool outputPending = false;
-    std::chrono::steady_clock::time_point nextRumbleRefresh{};
+    std::array<ControllerSlot, PAD_MAX_CONTROLLERS> slots{};
 };
 
 #endif
