@@ -105,6 +105,11 @@ def check_lifecycle_host(relinker, host, work, linux, deferred):
                                  env={**os.environ, 'ANYPS5_GUEST_MODULE_ARGS': str(events)},
                                  capture_output=True, text=True, timeout=30)
             assert run.returncode == 0, (run.returncode, run.stdout, run.stderr)
+            assert not events.exists(), events.read_text()
+            run = subprocess.run([sys.executable, __file__, '--load', str(libraries / 'libkernel.prx'), str(initializer)],
+                                 env={**os.environ, 'ANYPS5_GUEST_MODULE_ARGS': str(events)},
+                                 capture_output=True, text=True, timeout=30)
+            assert run.returncode == 0, (run.returncode, run.stdout, run.stderr)
         assert events.read_text() == 'result=0\n', events.read_text()
 
 
