@@ -267,6 +267,46 @@ void importRunGrowthTests(const Context& context) {
     ::operator delete(block, std::align_val_t{piece});
 }
 
+void importRunReplacedTests(const Context& context) {
+    constexpr std::size_t piece = 65536;
+    void* block = ::operator new(3 * piece, std::align_val_t{piece});
+    auto* guest = static_cast<std::uint8_t*>(block);
+    const auto first = reinterpret_cast<std::uintptr_t>(block);
+    std::memset(block, 0x3c, 3 * piece);
+    auto importing = context;
+    importing.hostImportAlignment = piece;
+    const auto add = [&](void* range, bool writable) {
+        GuestAllocations::Mutation mutation;
+        mutation.Add(range, piece, true, writable, true);
+    };
+    const auto remove = [&](void* range) {
+        GuestAllocations::Mutation mutation;
+        mutation.Remove(range);
+    };
+    const auto build = [&](std::size_t pieces, const std::string& step) {
+        GuestBufferMemory leased(importing);
+        leased.AcquireRegistered();
+        leased.AddReadable(first + 64, 16);
+        leased.Upload(true);
+        const auto ranges = leased.AddressRanges();
+        leased.WriteBack();
+        Require(std::any_of(ranges.begin(), ranges.end(), [&](const auto& range) { return range.begin <= first && first + pieces * piece <= range.end; }), "the import of a run does not cover its " + std::to_string(pieces) + " registered pieces " + step);
+    };
+    add(guest, true);
+    add(guest + piece, false);
+    add(guest + 2 * piece, true);
+    build(1, "while the read-only middle piece ends it");
+    for (int round = 0; round < 4; ++round) {
+        remove(guest + piece);
+        add(guest + piece, round % 2 == 0);
+        build(round % 2 == 0 ? 3 : 1, "after the middle piece was replaced by one that " + std::string(round % 2 == 0 ? "continues" : "ends") + " the run, with as many ranges registered as before");
+    }
+    remove(guest);
+    remove(guest + piece);
+    remove(guest + 2 * piece);
+    ::operator delete(block, std::align_val_t{piece});
+}
+
 void spaceWritableWritesTests(const Context& context) {
     if (!AddressSpaceCounters().enabled) return;
     constexpr std::size_t piece = 65536;
@@ -2557,6 +2597,7 @@ void RunBdaResourceTests(const Context& context, const BdaTestAccess& access) {
     snapshotTableTests(context, access);
     importSpanTests(context);
     importRunGrowthTests(context);
+    importRunReplacedTests(context);
     failedImportRemapTests(context, access);
     spaceImportRunTests(context);
     spaceWritableWritesTests(context);

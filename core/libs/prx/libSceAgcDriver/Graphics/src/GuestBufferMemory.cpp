@@ -1289,25 +1289,22 @@ RunBounds importRunBounds(const GuestAllocations::Lease& lease, std::uint64_t ad
         bounds = walkRunBounds(lease, address, index);
     } else {
         struct Memo {
-            const void* ranges = nullptr;
-            std::size_t size = 0;
+            std::weak_ptr<const GuestAllocations::Lease::Ranges> snapshot;
             std::size_t index = 0;
             std::uint64_t window = 0;
             std::uint64_t windowBlock = 0;
-            const void* first = nullptr;
-            const void* last = nullptr;
             RunBounds bounds;
         };
         static thread_local std::array<Memo, 1024> memos{};
-        const void* ranges = &lease[0];
+        const auto& snapshot = lease.Snapshot();
         const auto windowBlock = window != 0 ? address / window : 0;
-        const auto slot = (reinterpret_cast<std::uintptr_t>(ranges) / 16u ^ index * 0x9e3779b1u ^ windowBlock * 0x85ebca6bu) % memos.size();
+        const auto slot = (reinterpret_cast<std::uintptr_t>(snapshot.get()) / 16u ^ index * 0x9e3779b1u ^ windowBlock * 0x85ebca6bu) % memos.size();
         auto& entry = memos[slot];
-        if (entry.ranges == ranges && entry.size == lease.size() && entry.index == index && entry.window == window && entry.windowBlock == windowBlock && entry.bounds.last < lease.size() && lease[entry.bounds.first].get() == entry.first && lease[entry.bounds.last].get() == entry.last) {
+        if (!entry.snapshot.owner_before(snapshot) && !snapshot.owner_before(entry.snapshot) && entry.index == index && entry.window == window && entry.windowBlock == windowBlock) {
             bounds = entry.bounds;
         } else {
             bounds = walkRunBounds(lease, address, index);
-            entry = Memo{ranges, lease.size(), index, window, windowBlock, lease[bounds.first].get(), lease[bounds.last].get(), bounds};
+            entry = Memo{snapshot, index, window, windowBlock, bounds};
         }
     }
     bounds.single = bounds.first != bounds.last && Imports().unaliasedSpans.contains(lease[bounds.first]->address);
