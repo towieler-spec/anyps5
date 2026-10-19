@@ -75,8 +75,6 @@ int main() {
             RequireTruncatedBranchRejected(rejected);
         }
 
-        // A truncated branch whose source and target stay before the
-        // edit must not prevent an unrelated length-changing rewrite.
         const auto unaffected = rewriter.Rewrite(
             {0x66, 0xEB, 0x00, 0x90, 0x90, 0xC3},
             {4, {0x66, 0x90}});
