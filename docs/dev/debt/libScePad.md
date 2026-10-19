@@ -160,3 +160,4 @@
 - [scePadControllerUpdateResetController](../../../core/libs/prx/libScePad/Export.cpp) (libScePad) - unknown signature
 - [scePadControllerUpdateGetReconnectStatus](../../../core/libs/prx/libScePad/Export.cpp) (libScePad) - unknown signature
 - [scePadControllerUpdateTerm](../../../core/libs/prx/libScePad/Export.cpp) (libScePad) - unknown signature
+- PPSA02530 imports declared without parameters, signatures unknown, added without an implementation because the title fails to load without them: [scePadVrControllerGetTriggerEffectStates](../../../core/libs/prx/libScePad/Export.cpp) (libScePad).
