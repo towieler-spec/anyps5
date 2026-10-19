@@ -310,7 +310,7 @@ std::vector<GuestArtifact> GuestModuleBuilder::Build(const std::filesystem::path
             addHost(dependency, windows || !deferred(index));
             if (findGuest(dependency) == guestNames.end()) hosts.push_back(dependency);
         }
-        if (!windows && !macos && images[index].Init != 0) {
+        if (!windows && !macos && images[index].HasInit) {
             if (std::find(hosts.begin(), hosts.end(), "libkernel.prx") == hosts.end()) hosts.push_back("libkernel.prx");
             if (!deferred(index) && uniqueHosts.insert("libkernel.prx").second) hostLibraries.push_back("libkernel.prx");
         }
@@ -386,7 +386,10 @@ std::vector<GuestArtifact> GuestModuleBuilder::Build(const std::filesystem::path
                 needed.push_back("$ORIGIN/" + dependencyPath.lexically_relative(image.SourcePath.parent_path()).generic_string());
             }
             needed.insert(needed.end(), moduleHostLibraries[index].begin(), moduleHostLibraries[index].end());
-            output = macos ? Elfpatcher::GuestModuleWriter().WriteMacOs(image, needed, guestRunPath) : Elfpatcher::GuestModuleWriter().WriteLinux(image, needed, guestRunPath);
+            const auto directory = image.SourcePath.parent_path();
+            const bool deferLinuxStart = isRuntime(index) && directory != root / "sce_module" &&
+                directory != root / "sce_modules" && directory != root / "prx";
+            output = macos ? Elfpatcher::GuestModuleWriter().WriteMacOs(image, needed, guestRunPath) : Elfpatcher::GuestModuleWriter().WriteLinux(image, needed, guestRunPath, deferLinuxStart);
         }
         if (windows) {
             for (const auto& [name, provider] : guestNames) {
