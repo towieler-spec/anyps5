@@ -533,27 +533,42 @@ std::uint64_t forcedCacheBudget() {
     return forced;
 }
 
-std::uint64_t storageBudget(const Context& context) {
+struct StorageLimits {
+    std::uint64_t budget = 0;
+    std::uint64_t ceiling = 0;
+};
+
+StorageLimits storageLimits(const Context& context) {
     const auto forced = forcedCacheBudget();
-    if (forced != 0) return forced;
-    if (context.memoryProperties2 == nullptr || context.physical == VK_NULL_HANDLE) return TextureCacheBudget(context.memory);
+    if (forced != 0) return {forced, forced + forced / 4u};
+    if (context.memoryProperties2 == nullptr || context.physical == VK_NULL_HANDLE) {
+        const auto fallback = TextureCacheBudget(context.memory);
+        return {fallback, fallback + fallback / 4u};
+    }
     static struct {
         std::mutex mutex;
         VkPhysicalDevice device{VK_NULL_HANDLE};
         std::chrono::steady_clock::time_point read{};
-        std::uint64_t budget{0};
+        StorageLimits limits{};
     } cached;
     const auto now = std::chrono::steady_clock::now();
     std::lock_guard lock(cached.mutex);
-    if (cached.device == context.physical && now - cached.read < std::chrono::seconds(1)) return cached.budget;
+    if (cached.device == context.physical && now - cached.read < std::chrono::seconds(1)) return cached.limits;
     VkPhysicalDeviceMemoryBudgetPropertiesEXT reported{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT};
     VkPhysicalDeviceMemoryProperties2 properties{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2};
     properties.pNext = &reported;
     context.memoryProperties2(context.physical, &properties);
     cached.device = context.physical;
     cached.read = now;
-    cached.budget = StorageTextureBudget(context.memory, &reported, SampledTextureMemory(), storageCacheBytes());
-    return cached.budget;
+    const auto budget = StorageTextureBudget(context.memory, &reported, SampledTextureMemory(), storageCacheBytes());
+    const auto heap = largestDeviceLocalHeap(context.memory);
+    const auto cap = heap && reported.heapBudget[*heap] != 0 ? std::min<std::uint64_t>(TextureCacheBudget(context.memory), reported.heapBudget[*heap] / 4u) : TextureCacheBudget(context.memory);
+    cached.limits = {budget, std::max(budget + budget / 4u, cap)};
+    return cached.limits;
+}
+
+std::uint64_t storageBudget(const Context& context) {
+    return storageLimits(context).budget;
 }
 
 std::uint64_t sampledBudget(const Context& context, TextureCache& cache) {
@@ -1071,8 +1086,23 @@ std::shared_ptr<StorageTexture> cachedStorageTexture(const Context& context, std
             static const bool keepNew = std::getenv("APS5_NO_KEEP_NEW_STORAGE") == nullptr;
             if (auto* recorder = Recorder::Active(); keepNew && recorder != nullptr && GuestMemory::GpuMutex().HeldByThisThread() && recorder->Recording()) recorder->Keep(entry.texture);
             entry.accounted = heldBytes(*entry.texture);
-            const auto budget = storageBudget(context);
-            while (!cache.entries.empty() && cache.bytes + entry.accounted > budget) evicted.push_back(evictStorage(cache, std::prev(cache.entries.end())));
+            const auto limits = storageLimits(context);
+            const auto budget = limits.budget;
+            const auto ceiling = limits.ceiling;
+            std::size_t passed = 0;
+            while (!cache.entries.empty() && cache.bytes + entry.accounted > budget) {
+                const auto back = std::prev(cache.entries.end());
+                const bool over = cache.bytes + entry.accounted > ceiling;
+                const bool keep = back->accounted == 0 || (!over && back->texture.use_count() > 1);
+                if (keep && passed < cache.entries.size()) {
+                    cache.entries.splice(cache.entries.begin(), cache.entries, back);
+                    ++passed;
+                } else if (keep && !over) {
+                    break;
+                } else {
+                    evicted.push_back(evictStorage(cache, back));
+                }
+            }
             cache.bytes += entry.accounted;
             texture = entry.texture;
             cache.entries.push_front(std::move(entry));
