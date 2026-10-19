@@ -797,7 +797,7 @@ std::string RequestSerializer::Serialize(const RecompileRequest& request) const 
     std::string buffer;
     Writer writer(buffer);
     writer.WriteU32(0x41505335u);
-    writer.WriteU32(37u);
+    writer.WriteU32(38u);
     writeShaderBinary(writer, request.shader);
     writeGuestContext(writer, request.context);
     writeSpirvTarget(writer, request.target);
@@ -842,7 +842,7 @@ DeserializedRequest RequestSerializer::Deserialize(std::string_view text) const 
     Reader reader(decoded);
     if (reader.ReadU32() != 0x41505335u) throw std::runtime_error("invalid recompile request signature");
     const auto version = reader.ReadU32();
-    if (version < 1u || version > 37u) throw std::runtime_error("unsupported recompile request serialization version");
+    if (version < 1u || version > 38u) throw std::runtime_error("unsupported recompile request serialization version");
     DeserializedRequest result{};
     result.request.shader = readShaderBinary(reader, result.shaderCode, result.shaderHeader);
     result.request.context = readGuestContext(reader, result, version);
@@ -887,7 +887,7 @@ DeserializedRequest RequestSerializer::Deserialize(std::string_view text) const 
         }
     }
     if (version >= 36u) result.request.target.float32FlushToZero = reader.ReadBool();
-    if (version >= 33u && result.request.context.vertex.has_value()) {
+    if (version >= 38u && result.request.context.vertex.has_value()) {
         auto& vertex = *result.request.context.vertex;
         vertex.pointList = reader.ReadBool();
         vertex.pointSize = std::bit_cast<float>(reader.ReadU32());
