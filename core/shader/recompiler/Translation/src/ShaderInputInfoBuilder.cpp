@@ -153,6 +153,7 @@ ShaderStageInputInfo BuildShaderStageInputInfo(ShaderStageKind stage, const Gues
         pixelStorage.psIteratesSamples = pixel.iteratesSamples;
         pixelStorage.psPositionLocation = pixel.positionLocation;
         pixelStorage.sampleLocations = pixel.sampleLocations;
+        pixelStorage.sampleOrder = pixel.sampleOrder;
         ShaderStageInputInfo result;
         result.pixel = &pixelStorage;
         return result;
