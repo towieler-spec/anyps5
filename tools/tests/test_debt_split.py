@@ -222,6 +222,13 @@ class DebtSplitTests(unittest.TestCase):
         self.assertIn(paragraph, self.read(INDEX))
         self.assertNotIn(paragraph, self.read("docs/dev/debt/libSceA.md"))
 
+    def test_split_keeps_blank_line_between_staying_entry_and_paragraph(self):
+        paragraph = "A paragraph that belongs to no library."
+        self.write(INDEX, "# Project technical debt\n\n### Silent stubs\n\n" + A_STUB
+                          + "\n- A toolchain limitation\n\n" + paragraph + "\n")
+        self.split()
+        self.assertIn("- A toolchain limitation\n\n" + paragraph + "\n", self.read(INDEX))
+
 
 if __name__ == "__main__":
     unittest.main()
