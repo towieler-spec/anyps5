@@ -70,8 +70,8 @@ void Driver::deferCompletion(const Submission& submission) {
         queue0Uncommitted.push_back(received);
     }
     completionDeferred() = true;
-    DrawPipeline::Queue0().Enqueue([this, serial = submission.serial, received, labelWrites = submission.labelWrites] {
-        completeSubmission(serial, received, labelWrites);
+    DrawPipeline::Queue0().Enqueue([this, serial = submission.serial, received, labelWrites = submission.labelWrites, holdsFlip = submission.holdsFlip] {
+        completeSubmission(serial, received, labelWrites, holdsFlip);
     }, {});
 }
 
@@ -91,7 +91,15 @@ void Driver::wakeQueueZeroForCompletions() {
     changed.notify_all();
 }
 
-void Driver::completeSubmission(std::uint64_t serial, std::uint64_t received, std::span<const std::uint64_t> labelWrites) {
+std::uint64_t Driver::submitFlipWork(std::uint32_t queue) {
+    GuestMemory::TagGpuLockSite(GuestMemory::GpuLockSite::End);
+    std::lock_guard gpuLock(GuestMemory::GpuMutex());
+    const auto localDevice = device.Load();
+    recordDeferredLabels(localDevice.get(), queue);
+    return localDevice != nullptr ? localDevice->SubmitAndEpoch() : 0;
+}
+
+void Driver::completeSubmission(std::uint64_t serial, std::uint64_t received, std::span<const std::uint64_t> labelWrites, bool holdsFlip) {
     struct Complete {
         Driver& driver;
         std::uint64_t serial, received;
@@ -109,7 +117,8 @@ void Driver::completeSubmission(std::uint64_t serial, std::uint64_t received, st
             if (notify) driver.changed.notify_all();
         }
     } complete{*this, serial, received, labelWrites};
-    submitOpenWork();
+    if (holdsFlip) releaseFlipHold(submitFlipWork(0));
+    else submitOpenWork();
 }
 
 const std::atomic<std::uint64_t>*& Driver::workerQueued() {
