@@ -39,6 +39,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <thread>
+#include <unordered_map>
 #include "Optimization/ShaderStageInputInfo.hpp"
 #include <spirv/unified1/spirv.hpp>
 #include "RdnaDecoder/RdnaInstructionDecoder.hpp"
@@ -714,6 +715,29 @@ ShaderRecompiler::LinkedCalls LinkUserDataCallees(const ShaderRecompiler::Recomp
     return ShaderRecompiler::LinkCalls(program, calls, callees, tableCalls, tableCallees);
 }
 
+constexpr auto FailedPreparationRetry = std::chrono::seconds(60);
+
+struct FailedPreparations {
+    std::mutex mutex;
+    std::unordered_map<std::uint64_t, std::pair<std::chrono::steady_clock::time_point, std::string>> failures;
+};
+
+FailedPreparations& failedPreparations() {
+    static auto* failed = new FailedPreparations();
+    return *failed;
+}
+
+std::uint64_t preparationIdentity(const PreparedShaders* prepared, std::size_t codeOffset, std::span<const std::uint64_t> key, std::span<const std::uint32_t> code) {
+    std::uint64_t hash = 1469598103934665603ull;
+    const auto mix = [&](std::uint64_t value) { hash = (hash ^ value) * 1099511628211ull; };
+    mix(reinterpret_cast<std::uintptr_t>(prepared));
+    mix(codeOffset);
+    for (const auto word : key) mix(word);
+    mix(code.size());
+    for (const auto word : code) mix(word);
+    return hash;
+}
+
 }
 
 ShaderRecompiler::PreparedShaderInvocation InvocationFor(const ShaderSnapshot& snapshot, std::size_t codeOffset, const ShaderRecompiler::RecompileRequest& request) {
@@ -740,8 +764,24 @@ ShaderRecompiler::PreparedShaderInvocation InvocationFor(const ShaderSnapshot& s
         if (!linked.code.empty() && !std::ranges::equal(invocationRequest.shader.code, linked.code)) continue;
         if (auto invocation = ShaderRecompiler::PreparedShaderInvocation::TryCreate(invocationRequest, entry.handle, key)) return std::move(*invocation);
     }
+    const auto identity = preparationIdentity(snapshot.prepared.get(), codeOffset, key, source.shader.code);
+    auto& failed = failedPreparations();
+    {
+        std::lock_guard failedLock(failed.mutex);
+        if (const auto found = failed.failures.find(identity); found != failed.failures.end()) {
+            if (std::chrono::steady_clock::now() - found->second.first < FailedPreparationRetry) throw std::runtime_error(found->second.second);
+            failed.failures.erase(found);
+        }
+    }
     ReportPreparedAtUse(snapshot, source);
-    auto handle = PrepareShaderWithDiagnostics(source);
+    std::shared_ptr<const ShaderRecompiler::SourceHandle> handle;
+    try {
+        handle = PrepareShaderWithDiagnostics(source);
+    } catch (const std::exception& error) {
+        std::lock_guard failedLock(failed.mutex);
+        failed.failures[identity] = {std::chrono::steady_clock::now(), error.what()};
+        throw;
+    }
     invocationRequest = source;
     invocationRequest.shader.code = ShaderRecompiler::GetPreparedCode(*handle);
     auto invocation = ShaderRecompiler::PreparedShaderInvocation::TryCreate(invocationRequest, handle, key);
