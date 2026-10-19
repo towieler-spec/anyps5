@@ -326,7 +326,7 @@ VkImageView RenderTarget::View() const {
     return view;
 }
 
-CommandBatch::CommandBatch(const Context& context) : context(context) {
+CommandBatch::CommandBatch(const Context& context, bool submitRecorder) : context(context) {
     // Records into the device's one command pool and submits to its queue: device-lock work only.
     GuestMemory::AssertGpuLockHeld("CommandBatch");
     try {
@@ -343,7 +343,9 @@ CommandBatch::CommandBatch(const Context& context) : context(context) {
         begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         Check(context.Function<PFN_vkBeginCommandBuffer>("vkBeginCommandBuffer")(commands, &begin), "vkBeginCommandBuffer");
         // Work recorded so far goes first in queue order, so this batch sees its results.
-        if (auto* recorder = Recorder::Active(); recorder != nullptr && recorder->Recording()) recorder->Submit();
+        if (submitRecorder) {
+            if (auto* recorder = Recorder::Active(); recorder != nullptr && recorder->Recording()) recorder->Submit();
+        }
     } catch (...) {
         release();
         throw;
@@ -368,9 +370,9 @@ VkCommandBuffer CommandBatch::Handle() const {
     return commands;
 }
 
-void CommandBatch::SubmitAndWait() {
+void CommandBatch::SubmitAndWait(bool reapRecorder) {
     Submit();
-    Wait();
+    Wait(reapRecorder);
 }
 
 void CommandBatch::Submit() {
@@ -387,7 +389,7 @@ void CommandBatch::Submit() {
     timing.Mark("queue_submit");
 }
 
-void CommandBatch::Wait() {
+void CommandBatch::Wait(bool reapRecorder) {
     Require(submitted, "command batch has not been submitted");
     if (!pending) return;
     PerformanceTimer timing("Graphics.Wait");
@@ -396,7 +398,9 @@ void CommandBatch::Wait() {
     if (result == VK_SUCCESS || result == VK_ERROR_DEVICE_LOST) pending = false;
     Check(result, "vkWaitForFences graphics");
     // Recorded batches preceded this one, so their completions (write-backs) can run now.
-    if (auto* recorder = Recorder::Active()) recorder->Reap();
+    if (reapRecorder) {
+        if (auto* recorder = Recorder::Active()) recorder->Reap();
+    }
 }
 
 }

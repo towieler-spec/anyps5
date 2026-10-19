@@ -95,14 +95,14 @@ private:
 
 class CommandBatch {
 public:
-    explicit CommandBatch(const Context& context);
+    explicit CommandBatch(const Context& context, bool submitRecorder = true);
     ~CommandBatch();
     CommandBatch(const CommandBatch&) = delete;
     CommandBatch& operator=(const CommandBatch&) = delete;
     VkCommandBuffer Handle() const;
-    void SubmitAndWait();
+    void SubmitAndWait(bool reapRecorder = true);
     void Submit();
-    void Wait();
+    void Wait(bool reapRecorder = true);
 
 private:
     void release() noexcept;

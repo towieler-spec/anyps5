@@ -286,6 +286,10 @@ Sampled textures and storage images stay in device memory in two caches that evi
 
 A fixed budget above the automatic one can exceed what the card holds next to the rest of the frame. Allocations then go to host memory (`[gpu] ... placed in host memory` lines), where the GPU reads them over PCIe. PPSA16064 on an RTX 4060 8 GB, whose automatic storage image budget was 1797 MiB under the earlier rule, placed 868 and 878 MiB in host memory with `APS5_TEXTURE_CACHE_MIB=3072` and walked through its first level at 4.46 and 4.83 FPS; with the variable unset it placed none and ran the same walk at 6.48 and 6.07 FPS. Leave it unset unless a measurement on the card shows otherwise.
 
+### Large heap mirrors
+
+Heap mirrors normally use host-visible memory. If that allocation fails, AnyPS5 retries the same contiguous shader-addressable mirror in device-local memory and moves data through a 16 MiB host staging buffer. This can avoid host-memory allocation limits when the GPU has enough free VRAM, while preserving the guest heap's single buffer device address. Initializing and refreshing a mirror, and writing GPU results back to guest memory, are slower because they require queue-ordered copies. `APS5_HEAP_MIRROR_MIB` limits the total size of heap mirrors; raising it does not create more VRAM or guarantee a large allocation will fit.
+
 ### Storing GPU results at each flip
 
 GPU results in storage images and render targets stay on the GPU until something reads their memory. A title that frees such an image after waiting for its GPU work and reuses the memory can have its new data overwritten when the results are stored later ([TechnicalDebt](../dev/TechnicalDebt.md)). `APS5_STORE_AT_FLIP=1` stores every pending result when a display buffer is flipped, at the cost of one write-back per pending image and frame. Any other value stops the title at its first flip.
