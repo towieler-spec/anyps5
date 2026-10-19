@@ -143,6 +143,7 @@ struct State {
     VkConservativeRasterizationModeEXT conservativeRasterization = VK_CONSERVATIVE_RASTERIZATION_MODE_DISABLED_EXT;
     VkRect2D scissor;
     VkCullModeFlags cullMode;
+    VkPolygonMode polygonMode = VK_POLYGON_MODE_FILL;
     VkFrontFace frontFace;
     VkProvokingVertexModeEXT provokingVertexMode = VK_PROVOKING_VERTEX_MODE_FIRST_VERTEX_EXT;
     VkPipelineColorBlendAttachmentState blend;
