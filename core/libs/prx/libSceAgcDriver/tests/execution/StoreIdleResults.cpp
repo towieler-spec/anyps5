@@ -1,4 +1,5 @@
 #include "prx/libSceAgcDriver/Execution/include/Driver.hpp"
+#include "prx/libSceAgcDriver/Execution/include/Driver/Synchronization/SynchronizationStatistics.hpp"
 #include "prx/libSceAgcDriver/Execution/include/GuestMemory.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/GuestTextureResource.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/TextureTiling.hpp"
@@ -70,10 +71,10 @@ std::vector<std::uint32_t> Commands(const std::uint32_t* texels) {
     return words;
 }
 
-void Store(const std::uint32_t* texels) {
+void Store(const std::uint32_t* texels, std::uint32_t queue = 0) {
     auto words = Commands(texels);
     Packet packet{words.data(), static_cast<std::uint32_t>(words.size()), 0, {}};
-    AgcDriver::Submit(&packet, 0);
+    AgcDriver::Submit(&packet, queue);
 }
 
 }
@@ -86,6 +87,7 @@ int main(int argc, char** argv) {
         }
         std::vector<std::uint32_t> storage((BlockBytes + 0x10000u) / 4u);
         const bool wake = argc == 2 && std::string_view(argv[1]) == "--idle-epoch-wake";
+        const bool asyncQueueWake = argc == 2 && std::string_view(argv[1]) == "--async-queue-wake";
         std::vector<std::uint32_t> nextStorage(wake ? (BlockBytes + 0x10000u) / 4u : 0u);
         auto* nextTexels = wake ? reinterpret_cast<std::uint32_t*>((reinterpret_cast<std::uintptr_t>(nextStorage.data()) + 0xffffu) & ~std::uintptr_t{0xffffu}) : nullptr;
         struct ShutdownGuard {
@@ -110,22 +112,32 @@ int main(int argc, char** argv) {
             return false;
         };
 
-        Store(texels);
-        if (wake) {
-            const auto pendingDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-            while (!AgcDriver::Graphics::StorageTexture::AnyPending() && std::chrono::steady_clock::now() < pendingDeadline) std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            Require(AgcDriver::Graphics::StorageTexture::AnyPending(), "idle wake fixture did not observe pending storage results");
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
-            {
-                std::lock_guard gpuLock(AgcDriver::GuestMemory::GpuMutex());
-                AgcDriver::Graphics::StorageTexture::FlushAllPending("idle wake fixture");
-            }
+        if (asyncQueueWake) {
             std::array<std::uint32_t, 2> nop{0xc0001000u, 0u};
             Packet packet{nop.data(), static_cast<std::uint32_t>(nop.size()), 0, {}};
-            AgcDriver::Submit(&packet, 0x30u);
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-            cpu = nextTexels;
-            Store(nextTexels);
+            AgcDriver::Submit(&packet, 0);
+            const auto dormantDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+            while (!AgcDriver::DriverDetail::queue0Dormant.load(std::memory_order_relaxed) && std::chrono::steady_clock::now() < dormantDeadline) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            Require(AgcDriver::DriverDetail::queue0Dormant.load(std::memory_order_relaxed), "queue 0 did not enter dormant wait after nop submission");
+            Store(texels, 0x30u);
+        } else {
+            Store(texels);
+            if (wake) {
+                const auto pendingDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+                while (!AgcDriver::Graphics::StorageTexture::AnyPending() && std::chrono::steady_clock::now() < pendingDeadline) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                Require(AgcDriver::Graphics::StorageTexture::AnyPending(), "idle wake fixture did not observe pending storage results");
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                {
+                    std::lock_guard gpuLock(AgcDriver::GuestMemory::GpuMutex());
+                    AgcDriver::Graphics::StorageTexture::FlushAllPending("idle wake fixture");
+                }
+                std::array<std::uint32_t, 2> nop{0xc0001000u, 0u};
+                Packet packet{nop.data(), static_cast<std::uint32_t>(nop.size()), 0, {}};
+                AgcDriver::Submit(&packet, 0x30u);
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                cpu = nextTexels;
+                Store(nextTexels);
+            }
         }
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
         while (!stored() && std::chrono::steady_clock::now() < deadline) std::this_thread::sleep_for(std::chrono::milliseconds(1));

@@ -86,7 +86,7 @@ void Driver::submitOpenWork() {
 }
 
 void Driver::wakeQueueZeroForCompletions() {
-    if (!completionsPending()) return;
+    if (!completionsPending() && !Graphics::StorageTexture::AnyPending()) return;
     std::lock_guard lock(mutex);
     changed.notify_all();
 }
@@ -104,7 +104,7 @@ void Driver::completeSubmission(std::uint64_t serial, std::uint64_t received, st
                 driver.forgetUnfinishedWrites(driver.workers.at(0), labelWrites);
                 const auto found = std::find(driver.queue0Uncommitted.begin(), driver.queue0Uncommitted.end(), received);
                 if (found != driver.queue0Uncommitted.end()) driver.queue0Uncommitted.erase(found);
-                notify = driver.idleWaiters != 0 || driver.orderHolders.load(std::memory_order_acquire) != 0 || completionsPending();
+                notify = driver.idleWaiters != 0 || driver.orderHolders.load(std::memory_order_acquire) != 0 || completionsPending() || Graphics::StorageTexture::AnyPending();
             }
             if (notify) driver.changed.notify_all();
         }
@@ -220,9 +220,9 @@ void Driver::run(std::uint32_t id) noexcept {
                             && ((!storeIdleResults && Graphics::StorageTexture::AnyPending()) || idleEpoch.load(std::memory_order_acquire) != idleEpochAtCheck)) continue;
                         if (id == 0) queue0Dormant.store(true, std::memory_order_relaxed);
                         const auto idleEpochAtWait = idleEpoch.load(std::memory_order_acquire);
-                        changed.wait(lock, [&] { return ready() || (id == 0 && (idleEpoch.load(std::memory_order_acquire) != idleEpochAtWait || completionsPending())); });
+                        changed.wait(lock, [&] { return ready() || (id == 0 && (idleEpoch.load(std::memory_order_acquire) != idleEpochAtWait || completionsPending() || (!storeIdleResults && allQueuesIdle() && Graphics::StorageTexture::AnyPending()))); });
                         if (id == 0) queue0Dormant.store(false, std::memory_order_relaxed);
-                        if (id == 0 && !ready() && (idleEpoch.load(std::memory_order_acquire) != idleEpochAtWait || completionsPending())) continue;
+                        if (id == 0 && !ready() && (idleEpoch.load(std::memory_order_acquire) != idleEpochAtWait || completionsPending() || (!storeIdleResults && allQueuesIdle() && Graphics::StorageTexture::AnyPending()))) continue;
                         break;
                     }
                     if (poll(ready)) break;
@@ -275,7 +275,7 @@ void Driver::run(std::uint32_t id) noexcept {
                 }
                 if (id == 0) queue0Executing = 0;
 
-                notify = idleWaiters != 0 || orderHolders.load(std::memory_order_acquire) != 0;
+                notify = idleWaiters != 0 || orderHolders.load(std::memory_order_acquire) != 0 || Graphics::StorageTexture::AnyPending();
             }
             if (notify) changed.notify_all();
             else ++costs.notifiesSkipped;
