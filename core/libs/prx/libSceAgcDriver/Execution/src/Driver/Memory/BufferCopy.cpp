@@ -2,6 +2,7 @@
 #include "prx/libSceAgcDriver/Execution/include/Driver/Memory/BufferCopy.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Driver/Diagnostics.hpp"
 #include "prx/libSceAgcDriver/Execution/include/GuestMemory.hpp"
+#include "prx/libSceAgcDriver/Graphics/include/GuestBufferMemory.hpp"
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
@@ -193,6 +194,7 @@ bool Driver::copyBuffer(QueueState& queue, std::uint32_t queueId, std::span<cons
         }
         bytes = range->bytes;
     } else if (indexed) {
+        Graphics::FinishLeaseWork();
         const bool recordAccessible = GuestMemory::Accessible(reinterpret_cast<const void*>(record), 12);
 
         bool published = false;
