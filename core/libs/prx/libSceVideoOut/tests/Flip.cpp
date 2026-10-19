@@ -1004,6 +1004,40 @@ void testOneDevice() {
     check(next.Serial() == 2, "the GPU work and the flip used more than one device");
 }
 
+void testOutputResolution() {
+    const int handle = sceVideoOutOpen(255, 0, 0, nullptr);
+    auto cfg = VideoOutDriver::Get().GetConfig(handle);
+    SDL_DisplayMode mode{};
+    check(SDL_GetCurrentDisplayMode(0, &mode) == 0, "the display mode could not be read");
+    const std::uint32_t expected = (mode.w >= 3840 || mode.h >= 2160) ? 2u : 1u;
+    VideoOutOutputStatus status{};
+    check(sceVideoOutGetOutputStatus(handle, &status) == 0 && status.resolution == expected, "a port without buffers did not report the display's resolution");
+    const std::uint32_t width = expected == 2u ? 1920u : 3840u;
+    const std::uint32_t height = expected == 2u ? 1080u : 2160u;
+    std::vector<std::byte> allocation(static_cast<std::size_t>(width) * height * 4 + 65535);
+    const auto storage = alignedBuffer(allocation);
+    VideoOutBuffers buffer{storage.data(), nullptr, {nullptr, nullptr}};
+    VideoOutBufferAttribute2 attribute{};
+    attribute.width = width;
+    attribute.height = height;
+    attribute.tiling_mode = 1;
+    attribute.pitch_in_pixel = width;
+    attribute.pixel_format = 0x8000000000000000ull;
+    sceVideoOutRegisterBuffers2(handle, 0, 0, &buffer, 1, &attribute, 0, nullptr);
+    check(sceVideoOutSubmitFlip(handle, 0, 1, 1) == 0, "the flip was not accepted");
+    {
+        std::unique_lock lock(cfg->mutex);
+        const bool done = cfg->vblankCond.wait_for(lock, std::chrono::seconds(15), [&] { return cfg->failure || cfg->flipStatus.count == 1; });
+        if (cfg->failure) std::rethrow_exception(cfg->failure);
+        check(done, "the flip did not complete");
+        check(cfg->width == width && cfg->height == height, "the port did not record the buffer size");
+    }
+    check(sceVideoOutGetOutputStatus(handle, &status) == 0 && status.resolution == expected, "the flipped buffer's size changed the reported resolution");
+    sceVideoOutUnregisterBuffers(handle, 0);
+    sceVideoOutClose(handle);
+    LibcRunShutdown_nid_postfix();
+}
+
 }
 
 int main(int argc, char** argv) {
@@ -1029,6 +1063,7 @@ int main(int argc, char** argv) {
         else if (argc == 2 && std::string(argv[1]) == "unregistered") testUnregisteredBuffer();
         else if (argc == 2 && std::string(argv[1]) == "ps4") testPs4Buffers();
         else if (argc == 2 && std::string(argv[1]) == "cpuflip") testCpuFlipOrder();
+        else if (argc == 2 && std::string(argv[1]) == "resolution") testOutputResolution();
         else testLifetime(argc == 2 && std::string(argv[1]) == "reopen");
         std::puts("VideoOut flip tests passed");
         return 0;
