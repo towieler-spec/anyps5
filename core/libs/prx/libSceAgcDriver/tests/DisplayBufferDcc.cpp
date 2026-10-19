@@ -161,7 +161,18 @@ void KeyCountTests() {
     Expect(TiledBytes(2560, 1440) / 256 == 61440, "2560x1440 does not fill its meta blocks");
     const auto bytes = TiledBytes(1920, 1080);
     Expect(AgcDriver::Graphics::DccKeyCount(TextureTileMode::kD64KBX, 4, 1920, 1080, bytes) == bytes / 256, "an SW_64KB_D_X surface's DCC left one key per 256 bytes");
-    Expect(AgcDriver::Graphics::DccKeyCount(TextureTileMode::kR64KBX, 8, 1920, 1080, 2 * bytes) == 2 * bytes / 256, "an 8-byte surface's DCC left one key per 256 bytes");
+    struct Texel {
+        std::uint32_t elementBytes;
+        std::uint32_t width;
+        std::uint32_t height;
+        std::uint64_t surfaceBytes;
+        std::size_t keys;
+    };
+    for (const auto& texel : {Texel{8, 1920, 1080, 255ull * 65536, 81920}, Texel{8, 2420, 1364, 418ull * 65536, 122880}, Texel{8, 128, 64, 65536, 4096}, Texel{2, 1920, 1080, 72ull * 65536, 24576}, Texel{1, 1920, 1080, 40ull * 65536, 16384}, Texel{16, 1920, 1080, 510ull * 65536, 163840}, Texel{12, 1920, 1080, 765ull * 65536, 765ull * 256}}) {
+        const auto keys = AgcDriver::Graphics::DccKeyCount(TextureTileMode::kR64KBX, texel.elementBytes, texel.width, texel.height, texel.surfaceBytes);
+        Expect(keys == texel.keys, std::to_string(texel.width) + "x" + std::to_string(texel.height) + " SW_64KB_R_X " + std::to_string(texel.elementBytes) + "-byte DCC covers " + std::to_string(keys) + " key bytes, expected " + std::to_string(texel.keys));
+    }
+    Expect(AgcDriver::Graphics::DccKeyCount(TextureTileMode::kD64KBX, 8, 1920, 1080, 255ull * 65536) == 255ull * 256, "an 8-byte SW_64KB_D_X surface's DCC left one key per 256 bytes");
     const auto surface = Surface(1920, 1080, 0, true);
     auto shape = surface;
     shape.mipCount = 2;
@@ -172,7 +183,9 @@ void KeyCountTests() {
     Expect(AgcDriver::Graphics::DccKeyCount(shape, 2 * bytes) == 2 * bytes / 256, "a two-layer surface's DCC left one key per 256 bytes");
     shape = surface;
     shape.format = AgcDriver::Graphics::FindGuestTextureFormat(VK_FORMAT_R16G16B16A16_SFLOAT, 8).value();
-    Expect(AgcDriver::Graphics::DccKeyCount(shape, 2 * bytes) == 2 * bytes / 256, "an 8-byte surface descriptor's DCC left one key per 256 bytes");
+    Expect(AgcDriver::Graphics::DccKeyCount(shape, 255ull * 65536) == 81920, "an 8-byte pipe-aligned surface descriptor's DCC does not cover its 512x256 meta blocks");
+    shape.dccPipeAligned = false;
+    Expect(AgcDriver::Graphics::DccKeyCount(shape, 255ull * 65536) == 255ull * 256, "an 8-byte unaligned surface descriptor's DCC left one key per 256 bytes");
     Expect(AgcDriver::DisplayBufferKeyBytes({65536, 0x8000000000000000ull, 1920, 1080}) == 49152 && AgcDriver::DisplayBufferKeyBytes({65536, 0x8000000000000000ull, 259, 137}) == 4096, "display buffers do not read the console's DCC extent");
 }
 

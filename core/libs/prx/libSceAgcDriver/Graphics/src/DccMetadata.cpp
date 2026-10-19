@@ -7,6 +7,7 @@
 #include "prx/libSceAgcDriver/Graphics/include/UnitShadow.hpp"
 #include <algorithm>
 #include <atomic>
+#include <bit>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -468,10 +469,12 @@ std::size_t DccKeyBytes(std::uint64_t surfaceBytes) {
 
 std::size_t DccKeyCount(TextureTileMode tileMode, std::uint32_t elementBytes, std::uint32_t width, std::uint32_t height, std::uint64_t surfaceBytes) {
     const auto keys = DccKeyBytes(surfaceBytes);
-    if (tileMode != TextureTileMode::kR64KBX || elementBytes != 4) return keys;
-    constexpr std::uint64_t MetaBlockEdge = 512;
+    if (tileMode != TextureTileMode::kR64KBX || elementBytes == 0 || elementBytes > 16 || !std::has_single_bit(elementBytes)) return keys;
     constexpr std::uint64_t MetaBlockBytes = 4096;
-    const auto console = (width + MetaBlockEdge - 1) / MetaBlockEdge * ((height + MetaBlockEdge - 1) / MetaBlockEdge) * MetaBlockBytes;
+    const auto texelsLog2 = std::countr_zero(MetaBlockBytes * KeyBytes / elementBytes);
+    const std::uint64_t blockWidth = 1ull << ((texelsLog2 + 1) / 2);
+    const std::uint64_t blockHeight = 1ull << (texelsLog2 / 2);
+    const auto console = (width + blockWidth - 1) / blockWidth * ((height + blockHeight - 1) / blockHeight) * MetaBlockBytes;
     return std::max(keys, static_cast<std::size_t>(console));
 }
 
