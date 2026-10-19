@@ -96,8 +96,6 @@ RewriteResult X64InstructionRewriter::Rewrite(
     const auto cutStart = static_cast<std::int64_t>(offset);
     const std::int64_t cutEnd = cutStart + oldLength;
 
-    // A truncated relative branch has a 16-bit target that this section-only
-    // rewriter cannot safely reconstruct. Refuse resizing while one survives.
     if (delta != 0) {
         for (const auto& match : matches) {
             const auto matchOffset = static_cast<std::int64_t>(match.Offset);
