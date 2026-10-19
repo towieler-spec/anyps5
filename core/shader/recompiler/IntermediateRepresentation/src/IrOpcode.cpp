@@ -115,6 +115,7 @@ constexpr std::array<OpcodeMeta, static_cast<std::size_t>(IrOpcode::Count)> Meta
     makeMeta("Reference", Void, U1),
     makeMeta("ReferenceU32", Void, U32),
     makeMeta("UnlinkedCall", Void, U32, U32, U32),
+    makeMeta("DescriptorFault", Void, U1, U32, U32, U32),
     makeMeta("GetUserData", U32, ScalarReg),
     makeMeta("GetShaderBase", U64),
     makeMeta("ShaderClock", U64),
@@ -892,6 +893,7 @@ bool IrOpcodeHasSideEffects(IrOpcode opcode) {
         case IrOpcode::Reference:
         case IrOpcode::ReferenceU32:
         case IrOpcode::UnlinkedCall:
+        case IrOpcode::DescriptorFault:
         case IrOpcode::SetTessellationAttribute:
         case IrOpcode::InterpolateHostP2:
         case IrOpcode::SetThreadBitScalarRegister:
