@@ -74,6 +74,7 @@ constexpr std::uint32_t FillOnes = 0x3c003c00u;
 constexpr std::array<float, 4> Ones{1.0f, 1.0f, 1.0f, 1.0f};
 constexpr std::array<float, 4> Written{0.75f, 0.25f, 0.5f, 1.0f};
 constexpr std::uint32_t StoredSample = 1;
+constexpr std::array<std::uint32_t, 4> PointMipSampler{0u, 0xfffu << 12u, 1u << 26u, 0u};
 
 alignas(256) constexpr std::array<std::uint32_t, 6> VertexCode{
     0xe0382000, 0x80000005, 0xbf8c3f70, 0xf80008cf, 0x03020100, 0xbf810000,
@@ -99,6 +100,15 @@ alignas(256) constexpr std::array<std::uint32_t, 26> ArrayLoadCode{
     0x80000501, 0xe0301010, 0x80000601, 0xe0301014, 0x80000701, 0xbf8c3f70, 0xf0001f38, 0x00011004,
     0xbf8c3f70, 0xe0701030, 0x80001001, 0xe0701034, 0x80001101, 0xe0701038, 0x80001201, 0xe070103c,
     0x80001301, 0xbf810000,
+};
+
+alignas(256) constexpr std::array<std::uint32_t, 44> PlaneCode{
+    0x34020087, 0xe0301000, 0x80000201, 0xe0301004, 0x80000301, 0xe0301008, 0x80000401, 0xe030100c,
+    0x80000501, 0xe0301010, 0x80000601, 0xbf8c3f70, 0xf0001f08, 0x00011005, 0xf09c0f08, 0x00611402,
+    0xf0900f08, 0x00611802, 0xbf8c3f70, 0xe0701030, 0x80001001, 0xe0701034, 0x80001101, 0xe0701038,
+    0x80001201, 0xe070103c, 0x80001301, 0xe0701040, 0x80001401, 0xe0701044, 0x80001501, 0xe0701048,
+    0x80001601, 0xe070104c, 0x80001701, 0xe0701050, 0x80001801, 0xe0701054, 0x80001901, 0xe0701058,
+    0x80001a01, 0xe070105c, 0x80001b01, 0xbf810000,
 };
 
 alignas(256) constexpr std::array<std::uint32_t, 19> StoreCode{
@@ -274,12 +284,13 @@ std::array<std::uint32_t, 8> TargetDescriptor(const Block& block, std::uint32_t 
     };
 }
 
-ShaderRecompiler::RecompileResult CompileProgram(AgcDriver::VulkanDevice& device, std::span<const std::uint32_t> code, const std::array<std::uint32_t, 8>& texture, std::vector<std::uint32_t>& userData) {
+ShaderRecompiler::RecompileResult CompileProgram(AgcDriver::VulkanDevice& device, std::span<const std::uint32_t> code, const std::array<std::uint32_t, 8>& texture, std::vector<std::uint32_t>& userData, const std::array<std::uint32_t, 4>& sampler = {}) {
     const auto address = reinterpret_cast<std::uintptr_t>(Buffer.data());
     const std::array<std::uint32_t, 4> buffer{static_cast<std::uint32_t>(address), static_cast<std::uint32_t>((address >> 32u) & 0xffffu), static_cast<std::uint32_t>(Buffer.size() * 4u), 0x31016facu};
     userData.assign(16, 0u);
     std::copy(buffer.begin(), buffer.end(), userData.begin());
     std::copy(texture.begin(), texture.end(), userData.begin() + 4);
+    std::copy(sampler.begin(), sampler.end(), userData.begin() + 12);
     const std::array<ShaderRecompiler::MemoryRegion, 1> memory{{{reinterpret_cast<std::uintptr_t>(code.data()), std::as_bytes(code)}}};
     const ShaderRecompiler::ShaderComputeStageInfo compute{{Threads, 1, 1}, 0u, {false, false, false}, false, 1};
     ShaderRecompiler::RecompileRequest request{
@@ -382,6 +393,40 @@ std::vector<std::array<float, 4>> LoadSamples(AgcDriver::VulkanDevice& device, c
 
 std::vector<std::array<float, 4>> LoadSamples(AgcDriver::VulkanDevice& device, const Block& block, std::uint32_t format = Format16161616Float, std::uint32_t tileMode = TileRenderTarget) {
     return LoadSamples(device, TargetDescriptor(block, SampleShift, format, tileMode));
+}
+
+void CheckFirstSampleReads(AgcDriver::VulkanDevice& device, const std::array<std::uint32_t, 8>& texture, const std::vector<std::array<float, 4>>& samples, bool distinct, const std::string& what) {
+    std::vector<std::uint32_t> userData;
+    const auto program = CompileProgram(device, PlaneCode, texture, userData, PointMipSampler);
+    const auto codeAddress = reinterpret_cast<std::uintptr_t>(PlaneCode.data());
+    bool differs = false;
+    for (std::uint32_t first = 0; first < Side * Side; first += Threads) {
+        Buffer.fill(0xdeadbeefu);
+        for (std::uint32_t tid = 0; tid < Threads; ++tid) {
+            const auto pixel = first + tid;
+            const std::array<std::uint32_t, 5> words{std::bit_cast<std::uint32_t>((pixel % Side + 0.5f) / Side), std::bit_cast<std::uint32_t>((pixel / Side + 0.5f) / Side), std::bit_cast<std::uint32_t>(1.0f), pixel % Side, pixel / Side};
+            std::copy(words.begin(), words.end(), &Buffer[tid * Words]);
+        }
+        device.Dispatch(program, 1, 1, 1, {}, codeAddress);
+        device.WaitIdle();
+        for (std::uint32_t tid = 0; tid < Threads; ++tid) {
+            const auto pixel = first + tid;
+            const auto& sampleZero = samples[pixel * Samples];
+            std::array<float, 4> average{};
+            for (std::uint32_t sample = 0; sample < Samples; ++sample) {
+                for (std::uint32_t component = 0; component < 4u; ++component) average[component] += samples[pixel * Samples + sample][component] / Samples;
+            }
+            differs = differs || average != sampleZero;
+            for (std::uint32_t read = 0; read < 3u; ++read) {
+                std::array<float, 4> texel{};
+                for (std::uint32_t component = 0; component < 4u; ++component) texel[component] = std::bit_cast<float>(Buffer[tid * Words + LoadResult + read * 4u + component]);
+                char where[200];
+                std::snprintf(where, sizeof(where), "%s of pixel (%u, %u) read (%g, %g, %g, %g), sample 0 is (%g, %g, %g, %g)", read == 0u ? "a DIM 2D image_load" : read == 1u ? "a DIM 2D image_sample_lz" : "a DIM 2D image_sample_l at LOD 1", pixel % Side, pixel / Side, texel[0], texel[1], texel[2], texel[3], sampleZero[0], sampleZero[1], sampleZero[2], sampleZero[3]);
+                Require(texel == sampleZero, std::string(where) + " " + what);
+            }
+        }
+    }
+    Require(!distinct || differs, "no pixel's sample 0 differs from the average of its samples " + what);
 }
 
 std::array<std::uint32_t, 8> CompressedDescriptor(const Block& block, std::uint32_t tileMode, std::uint64_t htile) {
@@ -654,12 +699,33 @@ int main(int argc, char** argv) {
         Block other(BlockBytes);
         const auto color = DecodeTarget(block);
         const auto state = TargetState(color);
+        Draw(*device, state);
+        const auto drawn = LoadSamples(*device, block);
+        CheckSamples(state, drawn, {});
+        CheckFirstSampleReads(*device, TargetDescriptor(block, SampleShift), drawn, true, "from the drawn 4x target");
+        Draw(*device, state, 0, 2u, Unorm8PixelCode);
+        const auto redrawn = LoadSamples(*device, block);
+        Require(redrawn != drawn, "drawing the 4x target again with another color left its samples unchanged");
+        CheckFirstSampleReads(*device, TargetDescriptor(block, SampleShift), redrawn, true, "from the 4x target drawn again with another color after a first read");
+        Block zeroed(BlockBytes);
+        CheckFirstSampleReads(*device, TargetDescriptor(zeroed, SampleShift), std::vector<std::array<float, 4>>(Side * Side * Samples), false, "from zeroed color memory no draw rendered to");
+        Block aliased(4u * BlockBytes);
+        Draw(*device, TargetState(DecodeSwappedTarget(aliased)), 0, 2u, Unorm8PixelCode);
+        Draw(*device, TargetState(DecodeTarget(aliased)));
+        const auto aliasedSamples = LoadSamples(*device, aliased);
+        CheckSamples(state, aliasedSamples, {});
+        CheckFirstSampleReads(*device, TargetDescriptor(aliased, SampleShift), aliasedSamples, true, "from a 4x RGBA16F target drawn after a BGRA8 target at the same address");
+        std::puts("DIM 2D image_load, image_sample_lz and image_sample_l reads of a 4x color target return each pixel's sample 0");
+        Block swapped(4u * BlockBytes);
+        Draw(*device, TargetState(DecodeSwappedTarget(swapped)), 0, 2u, Unorm8PixelCode);
+        const auto swappedSamples = LoadSamples(*device, swapped, Format8888Unorm);
+        CheckSwappedSamples(swappedSamples);
+        CheckFirstSampleReads(*device, TargetDescriptor(swapped, SampleShift, Format8888Unorm), swappedSamples, true, "from a 4x BGRA8 target read through an RGBA8 descriptor");
+        std::puts("a 4x BGRA8 color target loaded through an RGBA8 texture descriptor reads its drawn color with red and blue swapped");
         if (!AgcDriver::VulkanDeviceTestAccess::ContextOf(*device).storageImageMultisample) {
-            std::puts("multisampled target sampling not tested: storage image multisampling unavailable");
+            std::puts("multisampled target fills, stores and swizzle modes not tested: storage image multisampling unavailable");
             return VulkanTestSkipped;
         }
-        Draw(*device, state);
-        CheckSamples(state, LoadSamples(*device, block), {});
         const auto colorBytes = AgcDriver::Graphics::MultisampledColorBytes(color);
         Require(colorBytes != 0 && colorBytes <= block.bytes, "the 4x target's color memory does not fit its block");
         AgcDriver::Graphics::NoteColorMetadataFill(block.Address(), static_cast<std::size_t>(colorBytes), FillOnes);
@@ -722,10 +788,6 @@ int main(int argc, char** argv) {
         StoreWords(standard, colorBytes, FillOnes);
         RequireRefused(*device, TargetDescriptor(standard, SampleShift, Format16161616Float, TileS64KBX), "has no modeled multisampled color footprint", "loading an S swizzle multisampled texture no draw rendered to");
         std::puts("every sample of a 4x color target loaded through its multisampled texture descriptor matches the triangle drawn into it, then the fill of its color memory; a surface no draw rendered to loads the value its color memory repeats and keeps it under a later draw");
-        Block swapped(4u * BlockBytes);
-        Draw(*device, TargetState(DecodeSwappedTarget(swapped)), 0, 2u, Unorm8PixelCode);
-        CheckSwappedSamples(LoadSamples(*device, swapped, Format8888Unorm));
-        std::puts("a 4x BGRA8 color target loaded through an RGBA8 texture descriptor reads its drawn color with red and blue swapped");
         Block destination(BlockBytes);
         struct ReleaseIndexDevice {
             std::unique_ptr<AgcDriver::VulkanDevice>& device;
