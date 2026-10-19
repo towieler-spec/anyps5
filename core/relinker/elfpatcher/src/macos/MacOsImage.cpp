@@ -393,6 +393,9 @@ std::vector<std::uint8_t> WriteMacOsImage(MacOsImageInput& input) {
     const auto guestSegments = segments.size();
     auto sections = image.BuildSections();
     for (const auto& trap : tls.GsTraps) {
+        const auto target = tls.BranchTargets.upper_bound(trap.Rva);
+        if (target != tls.BranchTargets.end() && *target < trap.Rva + trap.Length)
+            throw Domain::RelinkerException("Branch enters a guest GS instruction", *target);
         if (input.Trampolines != nullptr) {
             for (const auto& site : *input.Trampolines) {
                 const auto siteRva = image.GetRva(site.Address, site.Length);
