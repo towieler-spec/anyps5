@@ -6337,8 +6337,11 @@ void verifyBdaReadFallbackFunctions() {
                 if (op == spv::OpName) names[five[cursor + 1]] = reinterpret_cast<const char*>(&five[cursor + 2]);
                 if (op == spv::OpFunction) {
                     function = names[five[cursor + 2]];
-                    if (function == "record_bda_fault" || function.starts_with("read_bda_dword_bytes") || function.starts_with("read_bda_span") || function.starts_with("load_bda_span")) {
-                        require((five[cursor + 3] & spv::FunctionControlDontInlineMask) != 0u, "BDA read functions: a fault, byte read or span read function may be inlined");
+                    if (function == "record_bda_fault") {
+                        require((five[cursor + 3] & spv::FunctionControlDontInlineMask) == 0u, "BDA read functions: the fault function is declared DontInline");
+                        ++definitions[function];
+                    } else if (function.starts_with("read_bda_dword_bytes") || function.starts_with("read_bda_span") || function.starts_with("load_bda_span")) {
+                        require((five[cursor + 3] & spv::FunctionControlDontInlineMask) != 0u, "BDA read functions: a byte read or span read function may be inlined");
                         ++definitions[function];
                     }
                 }
