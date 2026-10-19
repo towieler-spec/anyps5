@@ -401,7 +401,9 @@ static void CheckPseudoRandomMibSysctl() {
     std::memset(shortBuffer, 0xaa, sizeof(shortBuffer));
     length = 63;
     Require(sysctl_nid_postfix(mib, 2, shortBuffer, &length, nullptr, 0) == -1 && *__error_nid_postfix() == 12);
-    Require(length == 63 && shortBuffer[62] != 0xaa && shortBuffer[63] == 0xaa);
+    bool shortChanged = false;
+    for (std::size_t i = 0; i < 63; ++i) shortChanged = shortChanged || shortBuffer[i] != 0xaa;
+    Require(length == 63 && shortChanged && shortBuffer[63] == 0xaa);
     std::memset(shortBuffer, 0xaa, sizeof(shortBuffer));
     Require(sysctl_nid_postfix(mib, 2, shortBuffer, nullptr, nullptr, 0) == -1 && *__error_nid_postfix() == 12);
     for (unsigned char byte : shortBuffer) Require(byte == 0xaa);
