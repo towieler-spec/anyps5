@@ -79,6 +79,7 @@ int APS5_VABI scePthreadAttrGet(Pthread thread, PthreadAttr* attr) {
         return SCE_KERNEL_ERROR_EINVAL;
     (*attr)->_stacksize = thread->stackSize;
     (*attr)->stackAddress = thread->stackAddress;
+    (*attr)->_guardsize = thread->guardSize;
     (*attr)->_detachstate = thread->_detached ? DETACH_DETACHED : DETACH_JOINABLE;
     (*attr)->_schedpriority = thread->priority.load(std::memory_order_relaxed);
     (*attr)->_schedpolicy = SCHED_FIFO_PS5;
