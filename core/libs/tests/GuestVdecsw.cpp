@@ -319,6 +319,25 @@ void testHevc() {
     check(pictures == HevcHashes.size(), "missing HEVC pictures after finalizing the sequence");
 }
 
+void testHevcCrop() {
+    Session session(CodecHevc, 1, 30);
+    std::vector<std::uint8_t> buffer(session.memory.maxFrameBufferSize);
+    const FrameBuffer frame{sizeof(FrameBuffer), buffer.data(), buffer.size()};
+    check(sceVdecswSetDecodeOutput(session.decoder, &frame) == 0, "cropped HEVC output buffer was rejected");
+    const InputData input{sizeof(InputData), HevcCroppedStream.data(), HevcCroppedStream.size(), 1000, 0, 0xa0};
+    check(sceVdecswSetDecodeInput(session.decoder, &input) == 0, "cropped HEVC decode input was rejected");
+    InputResult consumed{sizeof(InputResult)};
+    check(sceVdecswSyncDecodeInput(session.decoder, &consumed) == 0, "the cropped HEVC access unit was not consumed");
+    check(sceVdecswFinalizeDecodeSequence(session.decoder) == 0, "cropped HEVC finalize failed");
+    OutputInfo output{sizeof(OutputInfo)};
+    check(sceVdecswSyncDecodeOutput(session.decoder, &output) == 0 && output.isValid && output.frameWidth == 64 && output.frameHeight == 40, "unexpected cropped HEVC picture geometry");
+    HevcPictureInfo info{sizeof(HevcPictureInfo)};
+    check(sceVdecswGetHevcPictureInfo(&output, &info) == 0 && info.isValid, "cropped HEVC picture info missing");
+    check(info.picWidthInLumaSamples == 64 && info.picHeightInLumaSamples == 40, "cropped HEVC coded size differs");
+    check(info.conformanceWindowFlag == 1 && info.confWinLeftOffset == 0 && info.confWinRightOffset == 0 && info.confWinTopOffset == 0 && info.confWinBottomOffset == 2, "HEVC conformance window differs");
+    check(info.frameCroppingFlag == 1 && info.frameCropLeftOffset == 0 && info.frameCropRightOffset == 0 && info.frameCropTopOffset == 0 && info.frameCropBottomOffset == 2, "HEVC frame cropping differs");
+}
+
 void testWithoutOutput() {
     Session session;
     const auto units = accessUnits(false);
@@ -368,6 +387,7 @@ int main() {
     try {
         testDecode();
         testHevc();
+        testHevcCrop();
         testWithoutOutput();
         testSyncWrappers();
         std::puts("Vdecsw tests passed");
