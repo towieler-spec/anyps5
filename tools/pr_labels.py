@@ -13,7 +13,7 @@ import performance_compare
 UNBLOCKS = re.compile(r'Unblocks:[ \t]*([^\r\n]*(?:\r?\n[ \t]*[-*][ \t]+(?!\[[ xX]\])[^\r\n]*)*)')
 TITLE_ID = re.compile(r"(?<![A-Za-z0-9])[A-Z]{4}\d{5}(?!\d)")
 PERF = re.compile(r"perf(\(|!?:)")
-FENCE = re.compile(r"```[^\r\n]*\r?\n(.*?)```", re.S)
+FENCE = re.compile(r"(?:```|~~~)[^\r\n]*\r?\n(.*?)(?:```|~~~)", re.S)
 MARKER = "<!-- pr-labels-perf -->"
 UNBLOCKS_LABEL = "unblocks title"
 PERF_LABEL = "perf"
