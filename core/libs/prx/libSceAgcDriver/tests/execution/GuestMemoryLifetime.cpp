@@ -112,7 +112,9 @@ void CheckMappings(AgcDriver::VulkanDevice& device) {
     CheckPattern(mapping);
     Fill(device, mapping);
     Require(munmap_nid_postfix(middle, BlockBytes) == 0, "guest middle unmap failed");
-    Require(Imported(device, mapping), "unrelated prefix import was retired by middle unmap");
+    Require(!Imported(device, mapping), "middle unmap left the original host import alive across the unmapped range");
+    Fill(device, mapping);
+    Require(Imported(device, mapping), "the retained prefix was not imported again after middle unmap");
     Require(munmap_nid_postfix(mapping, BlockBytes) == 0, "guest prefix unmap failed");
     Require(!Imported(device, mapping), "prefix host import survived guest munmap");
     Require(munmap_nid_postfix(middle + BlockBytes, BlockBytes) == 0, "guest suffix unmap failed");
