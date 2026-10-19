@@ -1443,6 +1443,7 @@ State DecodeState(const QueueState& queue, bool vertexWorkgroup) {
             const std::string packed = std::string(color.packing == ShaderRecompiler::ColorExportPacking::Float11_11_10 ? "an " : "a ") + PackedColorTargetName(color.packing);
             const auto slotExport = (exportFormat >> (4u * color.exportIndex)) & 0xfu;
             if (slotExport == 5 || slotExport == 6) throw std::runtime_error("AGC graphics: color export format " + std::to_string(slotExport) + " into " + packed + " target is unsupported");
+            if (state.srcColorBlendFactor == VK_BLEND_FACTOR_ONE && state.dstColorBlendFactor == VK_BLEND_FACTOR_ZERO && state.colorBlendOp == VK_BLEND_OP_ADD) state.blendEnable = VK_FALSE;
             Require(!state.blendEnable, "blending into " + packed + " color target is unsupported");
             Require((exportedMask & 7u) == 7u, "partial writes of " + packed + " color target are unsupported");
         }
