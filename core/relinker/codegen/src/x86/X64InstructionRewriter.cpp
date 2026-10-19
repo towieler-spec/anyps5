@@ -96,6 +96,20 @@ RewriteResult X64InstructionRewriter::Rewrite(
     const auto cutStart = static_cast<std::int64_t>(offset);
     const std::int64_t cutEnd = cutStart + oldLength;
 
+    // A truncated relative branch has a 16-bit target that this section-only
+    // rewriter cannot safely reconstruct. Refuse resizing while one survives.
+    if (delta != 0) {
+        for (const auto& match : matches) {
+            const auto matchOffset = static_cast<std::int64_t>(match.Offset);
+            if (matchOffset >= cutStart && matchOffset < cutEnd)
+                continue;
+
+            const auto info = decoder.DecodeInstruction(codeSection.data() + match.Offset, match.Length);
+            if (info.TruncatesBranchTarget)
+                throw CodegenException("Cannot change code length while a truncated relative branch remains", match.Offset);
+        }
+    }
+
     std::vector<std::uint8_t> rewritten;
     rewritten.reserve(codeSection.size() + static_cast<std::size_t>(delta > 0 ? delta : 0));
     rewritten.insert(rewritten.end(), codeSection.begin(), codeSection.begin() + offset);
