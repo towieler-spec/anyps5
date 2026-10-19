@@ -27,12 +27,14 @@ struct SpirvTargetOptions {
     bool fragmentDescriptorSet = false;
     bool float16DenormPreserve = false;
     bool spannedWaves = false;
+    bool spannedAnySubgroup = false;
     bool robustBufferAccess2 = false;
     bool float32FlushToZero = false;
 };
 
 struct SpirvEmitInfo {
     bool fullSubgroups = false;
+    bool anySubgroupSize = false;
 };
 
 struct SpannedWaveUnsupported : std::runtime_error {

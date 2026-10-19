@@ -1,5 +1,6 @@
 #include "SpirvBackend/SpirvBda.hpp"
 #include "SpirvBackend/SpirvEmitter.hpp"
+#include "SpirvBackend/SpirvSpannedUniformity.hpp"
 #include "SpirvBackend/SpirvEmitterHelpers.hpp"
 #include "SpirvBackend/SpirvEmitterState.hpp"
 #include "SpirvBackend/SpirvFlowEmitter.hpp"
@@ -279,6 +280,7 @@ std::vector<std::uint32_t> SpirvEmitter::Emit(const IrProgram& program, const Sh
     const bool halfHost = workgroup != nullptr && program.WaveSize() == 64u && workgroup->hostSubgroupSize == 32u;
     state.spannedWave = halfHost && target.spannedWaves && program.Resources().stage == IrShaderStage::Compute && !state.requirements.computeDerivatives && std::max(workgroup->threadsNum[0], 1u) * std::max(workgroup->threadsNum[1], 1u) * std::max(workgroup->threadsNum[2], 1u) == 64u;
     state.laneCount = halfHost && !state.spannedWave ? 2u : 1u;
+    state.spannedAnySubgroup = state.spannedWave && target.spannedAnySubgroup;
     if (state.spannedWave) {
         state.requirements.subgroupLocalInvocationId = true;
         state.requirements.subgroupBallot = true;
@@ -300,8 +302,15 @@ std::vector<std::uint32_t> SpirvEmitter::Emit(const IrProgram& program, const Sh
     EmitModuleHeader(state, bindings);
     EmitProgram(state);
     state.module.EmitEntryPoint(ExecutionModelForStage(state.program.Resources().stage), state.mainFunc, "main", state.interfaceVariables);
-    if (info != nullptr) info->fullSubgroups = state.spannedWave;
-    return state.module.Finalize();
+    auto words = state.module.Finalize();
+    if (state.spannedWave) {
+        if (auto reason = SpannedBarrierInDivergentFlow(words)) throw SpannedWaveUnsupported(*reason);
+    }
+    if (info != nullptr) {
+        info->fullSubgroups = state.spannedWave;
+        info->anySubgroupSize = state.spannedAnySubgroup;
+    }
+    return words;
 }
 
 }
