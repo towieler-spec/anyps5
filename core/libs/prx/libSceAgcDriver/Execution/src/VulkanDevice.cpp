@@ -25,6 +25,7 @@
 #include "prx/libSceAgcDriver/Execution/include/PresentationPass.hpp"
 #include "prx/libSceAgcDriver/Execution/include/PresentationScaler.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/DepthSurface.hpp"
+#include "prx/libSceAgcDriver/Graphics/include/Draw.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/PlaceholderImages.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/DccMetadata.hpp"
 #include "prx/libSceAgcDriver/Execution/include/DisplayFormat.hpp"
@@ -2156,6 +2157,7 @@ void VulkanDevice::WaitIdle() {
         state->recorder->Sync();
     }
     check(state->DeviceFunction<PFN_vkDeviceWaitIdle>("vkDeviceWaitIdle")(state->device), "vkDeviceWaitIdle");
+    Graphics::CheckPixelFunctionLds(graphicsContext());
     APS5_LOG_CHARS_OUT_DEBUG("VulkanDevice::WaitIdle complete");
 }
 
