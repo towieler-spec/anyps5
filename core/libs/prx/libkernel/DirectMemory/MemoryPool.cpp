@@ -69,18 +69,10 @@ struct PhysicalMemoryPool {
         if (start >= end || !RoundUp(start, align, cur)) return SCE_KERNEL_ERROR_EAGAIN;
 
         std::lock_guard<std::mutex> lock(_mutex);
-        const size_t pageCount = static_cast<size_t>(alignedLen / kPage);
-
-        while (cur <= end && alignedLen <= end - cur) {
-            size_t lastUsed;
-            if (!_lastUsedPage(static_cast<size_t>(cur / kPage), pageCount, lastUsed)) {
-                _commit(cur, alignedLen, memoryType);
-                *physOut = static_cast<int64_t>(cur);
-                return 0;
-            }
-            if (!RoundUp((static_cast<uint64_t>(lastUsed) + 1) * kPage, align, cur)) break;
-        }
-        return SCE_KERNEL_ERROR_EAGAIN;
+        if (!_findFree(cur, end, alignedLen, align)) return SCE_KERNEL_ERROR_EAGAIN;
+        _commit(cur, alignedLen, memoryType);
+        *physOut = static_cast<int64_t>(cur);
+        return 0;
     }
 
     bool Free(uint64_t start, size_t len) { return _release(start, len, false); }
@@ -176,12 +168,24 @@ private:
     };
     typedef std::map<uint64_t, Block> BlockMap;
 
-    bool _lastUsedPage(size_t first, size_t count, size_t& out) const {
-        for (size_t i = count; i-- > 0;) {
-            if (_used[first + i]) {
-                out = first + i;
-                return true;
-            }
+    bool _findFree(uint64_t& cur, uint64_t end, uint64_t length, uint64_t alignment) const {
+        auto block = _blocks.upper_bound(cur);
+        if (block != _blocks.begin() && std::prev(block)->second.end > cur) --block;
+        size_t probes = 0;
+        while (cur <= end && length <= end - cur) {
+            if (probes++ == 8) break;
+            while (block != _blocks.end() && block->second.end <= cur) ++block;
+            if (block == _blocks.end() || block->first >= cur + length) return true;
+            if (!RoundUp(block->second.end, alignment, cur)) return false;
+            ++block;
+        }
+        const auto pageCount = static_cast<size_t>(length / kPage);
+        while (cur <= end && length <= end - cur) {
+            const auto first = static_cast<size_t>(cur / kPage);
+            auto remaining = pageCount;
+            while (remaining != 0 && !_used[first + remaining - 1]) --remaining;
+            if (remaining == 0) return true;
+            if (!RoundUp(static_cast<uint64_t>(first + remaining) * kPage, alignment, cur)) break;
         }
         return false;
     }

@@ -2,6 +2,8 @@
 #include "prx/libkernel/DirectMemory/MemoryPool.hpp"
 #include "prx/libkernel/KernelErrors.hpp"
 #include <cstdint>
+#include <algorithm>
+#include <array>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -270,12 +272,72 @@ void forget_exception_propagates_and_rolls_back() {
     CHECK(PoolEmpty());
 }
 
+void alloc_randomized_first_fit() {
+    std::array<bool, 512> used{};
+    std::uint32_t state = 0x69af123b;
+    const auto next = [&] {
+        state ^= state << 13;
+        state ^= state >> 17;
+        state ^= state << 5;
+        return state;
+    };
+    for (unsigned operation = 0; operation < 32768; ++operation) {
+        if ((next() & 3) == 0) {
+            const auto start = next() % used.size();
+            const auto count = std::min<std::size_t>(1 + next() % 8, used.size() - start);
+            DirectMemoryFree(static_cast<int64_t>(start * kPage), count * kPage);
+            std::fill_n(used.begin() + start, count, false);
+            continue;
+        }
+        const auto start = next() % (used.size() * kPage);
+        const auto end = next() % (used.size() * kPage + 1);
+        const auto bytes = 1 + next() % (8 * kPage);
+        const auto alignment = 1 + next() % (11 * kPage);
+        const auto length = (bytes + kPage - 1) / kPage * kPage;
+        const auto align = (alignment + kPage - 1) / kPage * kPage;
+        std::int64_t expected = -1;
+        for (auto address = (start + align - 1) / align * align; address <= end && length <= end - address; address += align) {
+            const auto first = used.begin() + address / kPage;
+            if (std::none_of(first, first + length / kPage, [](bool value) { return value; })) {
+                expected = static_cast<std::int64_t>(address);
+                break;
+            }
+        }
+        std::int64_t actual = -1;
+        const auto result = DirectMemoryAlloc(static_cast<int64_t>(start), static_cast<int64_t>(end), bytes, alignment, 3, &actual);
+        CHECK(result == (expected < 0 ? SCE_KERNEL_ERROR_EAGAIN : 0));
+        CHECK(actual == expected);
+        if (expected >= 0) std::fill_n(used.begin() + expected / kPage, length / kPage, true);
+    }
+    DirectMemoryFree(0, kPool);
+    CHECK(PoolEmpty());
+}
+
+void alloc_page_granular_prefix() {
+    constexpr std::size_t blocks = 16384;
+    for (std::size_t i = 0; i < blocks; ++i) {
+        int64_t address = -1;
+        CHECK(DirectMemoryAlloc(i * kPage, (i + 1) * kPage, kPage, kPage, 1, &address) == 0);
+        CHECK(address == static_cast<int64_t>(i * kPage));
+    }
+    const auto first = (blocks + 2) / 3 * 3 * kPage;
+    int64_t address = -1;
+    CHECK(DirectMemoryAlloc(0, first + 4 * kPage - 1, 4 * kPage, 3 * kPage, 1, &address) == SCE_KERNEL_ERROR_EAGAIN);
+    CHECK(address == -1);
+    CHECK(DirectMemoryAlloc(0, first + 4 * kPage, 4 * kPage, 3 * kPage, 1, &address) == 0);
+    CHECK(address == static_cast<int64_t>(first));
+    DirectMemoryFree(0, kPool);
+    CHECK(PoolEmpty());
+}
+
 struct Case {
     const char* name;
     void (*fn)();
 };
 
 const Case kCases[] = {
+    {"alloc_page_granular_prefix", alloc_page_granular_prefix},
+    {"alloc_randomized_first_fit", alloc_randomized_first_fit},
     {"alloc_unplaceable_requests", alloc_unplaceable_requests},
     {"alloc_null_out", alloc_null_out},
     {"alloc_rounding_alignment_and_clamping", alloc_rounding_alignment_and_clamping},
