@@ -2,6 +2,7 @@ add_library(libkernel SHARED EXCLUDE_FROM_ALL
         ${CMAKE_CURRENT_SOURCE_DIR}/Unimplemented.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Apr/src/Apr.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Equeue/Equeue.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/Equeue/src/EdgeWatch.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Equeue/src/EventAccessors.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/File/src/ArchivedFile.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/File/src/DescriptorControl.cpp
@@ -1758,4 +1759,21 @@ if(BUILD_TESTING)
         set_tests_properties(guest_coredump_user_data PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libkernel>")
     endif()
+endif()
+
+if(BUILD_TESTING)
+    add_test_executable(guest_sleep_cancel_tests ${LIBS_INCLUDE_DIR}/tests/GuestSleepCancel.cpp)
+    target_include_directories(guest_sleep_cancel_tests PRIVATE ${LIBS_INCLUDE_DIR})
+    target_link_libraries(guest_sleep_cancel_tests PRIVATE libkernel libc)
+    configure_windows_unwind(guest_sleep_cancel_tests)
+    foreach(sleepCase IN ITEMS blocked disabled normal pending)
+        add_test(NAME guest_sleep_cancel_${sleepCase} COMMAND guest_sleep_cancel_tests ${sleepCase})
+        add_test(NAME guest_sleep_cancel_${sleepCase}_coarse COMMAND guest_sleep_cancel_tests ${sleepCase})
+        set_tests_properties(guest_sleep_cancel_${sleepCase} guest_sleep_cancel_${sleepCase}_coarse PROPERTIES TIMEOUT 20)
+        set_tests_properties(guest_sleep_cancel_${sleepCase}_coarse PROPERTIES ENVIRONMENT "APS5_COARSE_TIMED_WAITS=1")
+        if(WIN32)
+            set_tests_properties(guest_sleep_cancel_${sleepCase} guest_sleep_cancel_${sleepCase}_coarse PROPERTIES
+                ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:libkernel>")
+        endif()
+    endforeach()
 endif()
