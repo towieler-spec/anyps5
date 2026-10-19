@@ -1,6 +1,7 @@
 #include "prx/libSceAgcDriver/Execution/include/ProfileOutput.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/GuestBufferMemory.hpp"
 #include "ThreadOwned.hpp"
+#include "prx/libSceAgcDriver/Graphics/include/SnapshotCopies.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/BdaResources.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/Texture.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/Recorder.hpp"
@@ -1912,26 +1913,7 @@ ImageMirrors& Mirrors() {
     return mirrors;
 }
 
-struct SnapshotCopies {
-    using Key = std::tuple<std::uint64_t, std::size_t, VkBufferUsageFlags>;
-    static constexpr std::size_t Budget = std::size_t{16} << 20u;
-    static constexpr std::size_t MaxEntries = 1024;
-    std::mutex mutex;
-    VkDevice device = VK_NULL_HANDLE;
-    struct Entry {
-        std::shared_ptr<Buffer> buffer;
-        std::vector<std::byte> bytes;
-        std::list<Key>::iterator recent;
-    };
-    std::map<Key, Entry> entries;
-    std::list<Key> recency;
-    std::size_t bytes = 0;
-    void clear() {
-        entries.clear();
-        recency.clear();
-        bytes = 0;
-    }
-};
+using SnapshotCopies = Detail::SnapshotCopies;
 
 SnapshotCopies& SnapshotCopyCache() {
     static SnapshotCopies copies;
@@ -1942,7 +1924,7 @@ std::shared_ptr<Buffer> snapshotCopy(const Context& context, std::uint64_t addre
     auto& copies = SnapshotCopyCache();
     std::lock_guard lock(copies.mutex);
     if (copies.device != context.device) {
-        copies.clear();
+        copies.Clear();
         copies.device = context.device;
     }
     const SnapshotCopies::Key key{address, bytes.size(), usage};
@@ -1964,9 +1946,7 @@ std::shared_ptr<Buffer> snapshotCopy(const Context& context, std::uint64_t addre
         copies.entries.erase(oldest);
         copies.recency.pop_front();
     }
-    copies.recency.push_back(key);
-    copies.entries.emplace(key, SnapshotCopies::Entry{buffer, {bytes.begin(), bytes.end()}, std::prev(copies.recency.end())});
-    copies.bytes += bytes.size();
+    copies.Insert(key, buffer, bytes);
     return buffer;
 }
 
@@ -2868,7 +2848,7 @@ void ClearSnapshotCopies(VkDevice device) {
     auto& copies = SnapshotCopyCache();
     std::lock_guard lock(copies.mutex);
     if (copies.device != device) return;
-    copies.clear();
+    copies.Clear();
     copies.device = VK_NULL_HANDLE;
 }
 
