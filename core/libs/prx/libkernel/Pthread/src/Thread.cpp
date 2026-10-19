@@ -115,18 +115,44 @@ struct FinishedStack {
 
 static std::mutex retiredStacksLock;
 static std::vector<RetiredStack> retiredStacks;
-static std::vector<FinishedStack> finishedStacks;
 static std::vector<FinishedStack> spareStacks;
+static std::size_t spareStackBytes = 0;
 
-static constexpr std::size_t StackCollectionBatch = 5;
+static std::size_t SpareStackLimit() {
+    static const auto limit = [] {
+        const auto pages = sysconf(_SC_PHYS_PAGES);
+        const auto pageSize = sysconf(_SC_PAGESIZE);
+        if (pages <= 0 || pageSize <= 0) return std::size_t{4u << 20};
+        const auto total = static_cast<std::uint64_t>(pages) * static_cast<std::uint64_t>(pageSize);
+        return std::clamp<std::size_t>(static_cast<std::size_t>(total / 1024), 4u << 20, 64u << 20);
+    }();
+    return limit;
+}
+
+static void ReleaseFinishedStack(const FinishedStack& stack) {
+    UnregisterGuestStackMapping(stack.address);
+    DoMunmap(stack.address, stack.bytes);
+}
 
 static void CollectFinishedStack(void* address, std::size_t bytes) {
     UnregisterGuestStackMapping(address);
-    std::lock_guard lock(retiredStacksLock);
-    finishedStacks.push_back({address, bytes});
-    if (finishedStacks.size() >= StackCollectionBatch) {
-        spareStacks.insert(spareStacks.end(), finishedStacks.begin(), finishedStacks.end());
-        finishedStacks.clear();
+    std::vector<FinishedStack> release;
+    {
+        std::lock_guard lock(retiredStacksLock);
+        spareStacks.push_back({address, bytes});
+        spareStackBytes += bytes;
+        const auto limit = SpareStackLimit();
+        while (spareStackBytes > limit && !spareStacks.empty()) {
+            spareStackBytes -= spareStacks.front().bytes;
+            release.push_back(spareStacks.front());
+            spareStacks.erase(spareStacks.begin());
+        }
+    }
+    if (!release.empty()) {
+        static std::atomic_flag logged = ATOMIC_FLAG_INIT;
+        if (!logged.test_and_set(std::memory_order_relaxed))
+            std::fprintf(stderr, "scePthread: spare stack cache reached its host-memory limit; releasing cached mappings\n");
+        for (const auto& stack : release) ReleaseFinishedStack(stack);
     }
 }
 
@@ -135,6 +161,7 @@ static bool TakeSpareStack(std::size_t bytes, FinishedStack* stack) {
     const auto found = std::find_if(spareStacks.begin(), spareStacks.end(), [bytes](const FinishedStack& candidate) { return candidate.bytes == bytes; });
     if (found == spareStacks.end()) return false;
     *stack = *found;
+    spareStackBytes -= found->bytes;
     spareStacks.erase(found);
     return true;
 }
@@ -144,13 +171,9 @@ static void ReleaseSpareStacks() {
     {
         std::lock_guard lock(retiredStacksLock);
         release.swap(spareStacks);
-        release.insert(release.end(), finishedStacks.begin(), finishedStacks.end());
-        finishedStacks.clear();
+        spareStackBytes = 0;
     }
-    for (const auto& stack : release) {
-        UnregisterGuestStackMapping(stack.address);
-        DoMunmap(stack.address, stack.bytes);
-    }
+    for (const auto& stack : release) ReleaseFinishedStack(stack);
 }
 
 static void AllocateGuestStack(PthreadPrivate* thread, std::size_t usableBytes) {
