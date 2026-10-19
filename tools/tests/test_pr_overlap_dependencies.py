@@ -47,6 +47,19 @@ class DependencyTests(unittest.TestCase):
             with self.subTest(body=body):
                 self.assertEqual(pull_requests(body)[1]["depends"], {2, 3})
 
+    def test_markdown_links_and_full_urls(self):
+        for body in (
+            "- [x] Depends on: [#2](https://github.com/owner/repo/pull/2)",
+            "- [x] Depends on: https://github.com/owner/repo/pull/2",
+            "- [x] Depends on: [PR #2](https://github.com/owner/repo/pull/2)",
+            "Depends on: [#2](https://github.com/owner/repo/pull/2), [#3](https://github.com/owner/repo/pull/3)",
+            "Depends on:\n- [#2](https://github.com/owner/repo/pull/2)\n- [#3](https://github.com/owner/repo/pull/3)",
+            "- [x] Depends on: [none](https://example.com)",
+        ):
+            with self.subTest(body=body):
+                expected = set() if "none" in body else ({2, 3} if "3" in body else {2})
+                self.assertEqual(pull_requests(body)[1]["depends"], expected)
+
     def test_later_references_are_not_dependencies(self):
         for newline in ("\n", "\r\n"):
             for declaration in ("Depends on #2.", "Depends on: #2"):
